@@ -114,6 +114,35 @@ The result is a piece of work that is:
 
 ---
 
+### 2.4 OpenClaw as the practical threat substrate
+
+The motivation above is framed generically — adaptive attacks against any
+multi-agent LLM substrate. In practice, the dominant such substrate in 2026
+is OpenClaw, an open-source self-hosted AI agent framework with hundreds of
+thousands of GitHub stars and a published security crisis. Independent
+research ([*Don't Let the Claw Grip Your Hand*, arXiv:2603.10387][openclaw-paper])
+tested 47 adversarial scenarios drawn from MITRE ATLAS / ATT&CK categories
+against OpenClaw deployments and reports an *average defense rate of 17%*.
+Major security organizations — Microsoft Security, IBM X-Force, Cisco,
+CrowdStrike, Oasis Security — have published OpenClaw-specific threat
+analyses in early 2026. The "ClawJacked" vulnerability disclosed by Oasis
+Security demonstrates remote agent takeover with no plugin install and no
+user interaction.
+
+AEGIS's existing five attack suites (injection, jailbreak, memory poisoning,
+bias inheritance, agent impersonation) map cleanly onto the static attack
+categories in that arXiv paper — they are, structurally, the static-payload
+versions of attacks documented against OpenClaw in the wild. PROBE extends
+AEGIS forward into the *adaptive multi-round* class: the attacks that come
+next once OpenClaw deployments harden against the obvious ones. Although
+PROBE technically targets AETHER multi-agent systems (the bili-core
+substrate), the threat model is OpenClaw-shaped, and the objective library
+deliberately reflects attack patterns documented against OpenClaw in
+particular (see `bili/aegis/suites/probe/payloads/probe_objectives.py` for
+`pr_sandbox_escape_001` and `pr_skill_poisoning_001`).
+
+[openclaw-paper]: https://arxiv.org/abs/2603.10387
+
 ## 3. Goals and non-goals
 
 ### 3.1 Goals

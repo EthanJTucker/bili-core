@@ -115,6 +115,42 @@ the gap PROBE addresses lives here.
 
 ---
 
+### Tier 5 — OpenClaw threat-model context (added after RFC v0.1; read for the second RFC pass)
+
+These contextualize *why* PROBE exists in 2026. Read after Tiers 1-3, before
+implementation begins. Together they form the strongest single justification
+in the existing literature for the work PROBE is doing.
+
+16. **arXiv:2603.10387, "Don't Let the Claw Grip Your Hand: A Security
+    Analysis and Defense Framework for OpenClaw."** The single most important
+    paper for PROBE's positioning. Tests 47 adversarial scenarios drawn from
+    MITRE ATLAS / ATT&CK against OpenClaw, reports 17% average defense rate.
+    Read for: the attack taxonomy (mirror it in the objective library where
+    sensible), the defense framework (informs what a successful PROBE result
+    *should look like*), and the limitations section (every limitation is a
+    follow-up).
+
+17. **Oasis Security: "ClawJacked" — OpenClaw Vulnerability Enables Full Agent
+    Takeover.** Operational worked example of an OpenClaw takeover via a
+    JavaScript + WebSocket attack chain on the local Gateway port. Concrete
+    reference for what "successful attack" looks like in the wild and how
+    little is required to land one.
+
+18. **Microsoft Security: "Running OpenClaw safely: identity, isolation, and
+    runtime risk" (Feb 19 2026).** The enterprise-defender framing of the
+    OpenClaw threat model. Useful for understanding what *they* think the
+    high-value defenses are, and for showing where PROBE-PAIR sessions can
+    demonstrate residual risk despite those defenses.
+
+19. **The Hacker News: "OpenClaw AI Agent Flaws Could Enable Prompt Injection
+    and Data Exfiltration" (March 2026).** Mass-media security coverage;
+    useful for "what does the broader security community consider settled" in
+    your blog-post-style writeup.
+
+20. **eye.security: "Log poisoning in AI agents — the OpenClaw case."** Defines
+    log poisoning as a distinct attack class, separate from memory poisoning.
+    Worth knowing as a candidate future PROBE objective (post-v0.1).
+
 ## 3-week milestone plan
 
 Each milestone has explicit exit criteria. Treat the criteria as binary:
