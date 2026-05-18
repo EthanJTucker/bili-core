@@ -8,11 +8,10 @@ in contrast to the (payload_id, mas_id, phase) triplet used by static suites.
 See RFC § 4.1 and § 5.2.
 """
 
-# pylint: disable=fixme  # TODOs are intentional scaffold markers; will be removed as features land
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -51,7 +50,7 @@ class ProbeObjective:
         objective_id:
             Globally unique within the objective library. Convention: `pr_<harm>_<n>`.
         harm_class:
-            HarmBench-aligned category. TODO: align taxonomy with HarmBench v1.
+            HarmBench-aligned category.
         severity:
             One of "low", "medium", "high". Mirrors static-suite severity.
         objective_text:
@@ -75,8 +74,11 @@ class ProbeObjective:
     notes: str = ""
 
     def __post_init__(self) -> None:
-        # TODO: validate severity ∈ {"low","medium","high"} and harm_class ∈ taxonomy
-        pass
+        if self.severity not in ("low", "medium", "high"):
+            raise ValueError(
+                f"ProbeObjective.severity must be one of "
+                f'{{"low","medium","high"}}; got {self.severity!r}'
+            )
 
 
 @dataclass
@@ -132,6 +134,53 @@ class ProbeOutcome:  # pylint: disable=too-many-instance-attributes
     estimated_cost_usd: float
 
 
+# Cross-suite CSV columns (kept in sync with `_CSV_COLUMNS` in
+# bili/aegis/suites/_suite_runner.py). PROBE rows leave `payload_id` and
+# `phase` blank.
+_CROSS_SUITE_COLUMNS: tuple[str, ...] = (
+    "payload_id",
+    "injection_type",
+    "severity",
+    "stub_mode",
+    "mas_id",
+    "phase",
+    "tier1_pass",
+    "tier2_influenced",
+    "tier2_resistant",
+    "tier3_score",
+    "tier3_confidence",
+    "tier3_reasoning",
+    "attack_suite",
+)
+
+# PROBE-specific columns added on top of the cross-suite schema.
+_PROBE_COLUMNS: tuple[str, ...] = (
+    "session_id",
+    "objective_id",
+    "policy",
+    "rng_seed",
+    "turns_used",
+    "budget_used",
+    "turns_to_compromise",
+    "terminated_reason",
+)
+
+PROBE_CSV_COLUMNS: tuple[str, ...] = _CROSS_SUITE_COLUMNS + _PROBE_COLUMNS
+
+
+def _stringify_enums(obj: Any) -> Any:
+    """Recursively convert Enum instances to their .value strings."""
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, dict):
+        return {k: _stringify_enums(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_enums(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_stringify_enums(v) for v in obj]
+    return obj
+
+
 @dataclass
 class ProbeSession:  # pylint: disable=too-many-instance-attributes
     """A multi-turn dialogue between attacker MAS and victim MAS."""
@@ -151,17 +200,99 @@ class ProbeSession:  # pylint: disable=too-many-instance-attributes
         """
         Render as a CSV row matching the cross-suite AEGIS schema.
 
-        Per RFC § 14: shared columns kept, PROBE-specific columns appended.
-        Static suites leave the appended columns blank; PROBE leaves
-        `payload_id` and `phase` blank.
+        Per RFC § 14: 13 shared columns kept, 8 PROBE-specific columns
+        appended. PROBE leaves `payload_id` and `phase` blank; static
+        suites leave the PROBE columns blank.
 
-        TODO: verify column order matches `_helpers.py` if a master column list
-        gets added there during integration.
+        `tier3_score` is the MAX across `self.turns`. `tier3_reasoning`
+        and `tier3_confidence` come from the (first) turn achieving the
+        max score. `tier2_influenced` and `tier2_resistant` are
+        JSON-encoded sorted unions across turns; `tier2_resistant` is
+        derived per-turn as ``propagation_path − influenced_agents``.
+
+        Raises:
+            RuntimeError: if `final_outcome` is None (session not finalized).
         """
-        # TODO: implement
-        raise NotImplementedError
+        if self.final_outcome is None:
+            raise RuntimeError(
+                f"Cannot serialize session {self.session_id!r} to CSV row: "
+                "final_outcome is None (session not yet finalized)."
+            )
+
+        if self.turns:
+            max_score = max(t.tier3_score for t in self.turns)
+            max_turn = next(t for t in self.turns if t.tier3_score == max_score)
+            tier3_reasoning = max_turn.tier3_reasoning
+            tier3_confidence = max_turn.tier3_confidence
+            influenced_union = sorted(
+                {a for t in self.turns for a in t.influenced_agents}
+            )
+            resistant_union = sorted(
+                {
+                    a
+                    for t in self.turns
+                    for a in t.propagation_path
+                    if a not in set(t.influenced_agents)
+                }
+            )
+        else:
+            max_score = 0
+            tier3_reasoning = ""
+            tier3_confidence = ""
+            influenced_union = []
+            resistant_union = []
+
+        # stub_mode: attacker without a real model_name ⇒ stub run
+        stub_mode = (
+            "stub" if not self.attacker_model_config.get("model_name") else "real"
+        )
+
+        tier1_pass = (
+            "true"
+            if self.final_outcome.reason == ProbeOutcomeReason.SUCCESS
+            else "false"
+        )
+
+        ttc: Any = (
+            self.final_outcome.turns_to_compromise
+            if self.final_outcome.turns_to_compromise is not None
+            else ""
+        )
+
+        return {
+            # Cross-suite columns (13)
+            "payload_id": "",
+            "injection_type": self.objective.harm_class,
+            "severity": self.objective.severity,
+            "stub_mode": stub_mode,
+            "mas_id": self.victim_mas_id,
+            "phase": "",
+            "tier1_pass": tier1_pass,
+            "tier2_influenced": json.dumps(influenced_union),
+            "tier2_resistant": json.dumps(resistant_union),
+            "tier3_score": max_score,
+            "tier3_confidence": tier3_confidence,
+            "tier3_reasoning": tier3_reasoning,
+            "attack_suite": "probe",
+            # PROBE-specific columns (8)
+            "session_id": self.session_id,
+            "objective_id": self.objective.objective_id,
+            "policy": self.policy_name,
+            "rng_seed": self.rng_seed,
+            "turns_used": len(self.turns),
+            "budget_used": self.final_outcome.estimated_cost_usd,
+            "turns_to_compromise": ttc,
+            "terminated_reason": self.final_outcome.reason.value,
+        }
 
     def to_sidecar_json(self) -> dict[str, Any]:
-        """Full multi-turn trajectory for `results/{mas_id}/sessions/{session_id}.json`."""
-        # TODO: implement
-        raise NotImplementedError
+        """Full multi-turn trajectory for `results/{mas_id}/sessions/{session_id}.json`.
+
+        Returns a dict suitable for `json.dumps(..., default=str)`. All
+        `Enum` values are pre-converted to their `.value` strings so that
+        a plain `json.dumps(...)` round-trips even without a `default`
+        argument. `victim_output` dicts inside `turns` may still contain
+        non-JSON-native objects (e.g. LangChain messages); callers that
+        want a clean round-trip should pass `default=str` to `json.dumps`.
+        """
+        return _stringify_enums(asdict(self))
