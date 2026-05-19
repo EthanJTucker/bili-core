@@ -30,8 +30,16 @@ class AttackPolicy(ABC):
         """Stable identifier used in the CSV `policy` column."""
 
     @abstractmethod
-    def plan_next_intent(self, session: ProbeSession) -> AttackIntent:
-        """Return the next AttackIntent given the session state."""
+    def plan_next_intent(self, session: ProbeSession) -> tuple[AttackIntent, int, int]:
+        """Return the next AttackIntent and its (tokens_in, tokens_out) cost.
+
+        The tuple-return shape honors the universal PROBE node contract:
+        every component that may invoke an LLM reports its token cost so
+        ``AttackerMAS.run_session`` can accumulate it into the
+        ``BudgetState`` without inspecting per-component attributes.
+
+        Pure deterministic policies should return ``(intent, 0, 0)``.
+        """
 
     @abstractmethod
     def should_continue(self, session: ProbeSession) -> bool:
