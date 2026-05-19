@@ -86,5 +86,23 @@ combined.groupby("attack_suite")["tier3_score"].describe()
 
 ## Status
 
-Implementation in progress. Current state: scaffold + RFC. See TODO markers
-throughout the source tree.
+**v0.1 implementation complete.** The suite runs end-to-end against a
+deterministic in-process fake LLM (covered by 344+ unit tests, all
+passing, pylint 10.00/10 across PROBE source + tests).
+
+A documented real-LLM smoke script is at
+[scripts/aegis/run_probe_smoke.ps1](../../../../scripts/aegis/run_probe_smoke.ps1)
+which runs PAIR against `simple_chain.yaml` using a DeepSeek + Claude +
+Gemini cross-provider trio with a `--budget-cost-usd 0.50` per-session
+cap. Run it with your own provider credentials to validate the
+infrastructure end-to-end.
+
+Remaining v0.2+ work (per the RFC):
+- LLM-driven qualitative `VictimObserverNode` summary
+- AETHER YAML expression of the attacker MAS (currently plain Python loop)
+- TAP off-topic-judge as a distinct evaluator (currently folded into
+  NO_PROGRESS verdict)
+- Backporting iterative attacks to the static AEGIS suites
+
+Implementation status of individual components is documented in the
+module docstrings.

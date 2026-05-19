@@ -3,11 +3,11 @@ Entry point for the PROBE suite.
 
 Matches the existing AEGIS runner CLI shape:
 
-    python bili/aegis/suites/probe/run_probe_suite.py --stub
-    python bili/aegis/suites/probe/run_probe_suite.py \\
+    python -m bili.aegis.suites.probe.run_probe_suite --stub
+    python -m bili.aegis.suites.probe.run_probe_suite \\
         --baseline-results bili/aegis/suites/baseline/results
 
-Probe-specific flags:
+PROBE-specific flags:
     --policies pair crescendo tap          (default: all three)
     --objectives pr_misinfo_001 ...        (default: all in library)
     --configs path/to/mas.yaml ...         (default: CONFIG_PATHS in _helpers.py)
@@ -16,105 +16,632 @@ Probe-specific flags:
     --budget-tokens 200000                 (per-session token cap)
     --budget-cost-usd 5.0                  (per-session cost cap)
     --smoke                                (1/10 scale for CI sanity check)
+    --attacker-model deepseek-chat         (real-LLM attacker model_name)
+    --victim-model us.anthropic.claude...  (override YAML victim model_name)
+    --judge-model gemini-2.5-flash         (real-LLM judge model_name)
 
 Output:
-    bili/aegis/suites/probe/results/{mas_id}/{session_id}.json   (sidecar)
-    bili/aegis/suites/probe/results/probe_results_matrix.csv     (matrix)
+    bili/aegis/suites/probe/results/{mas_id}/sessions/{session_id}.json  (sidecar)
+    bili/aegis/suites/probe/results/probe_results_matrix.csv             (matrix)
 
 See RFC § 12 for acceptance criteria.
-
-Implementation status: scaffold. The argparse skeleton is real; the session
-loop body is TODO.
 """
-
-# pylint: disable=fixme  # TODOs are intentional scaffold markers; will be removed as features land
 
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
+import logging
 import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any, Optional
+
+from bili.aegis.probe._llm import _FakeLLM, resolve_real_llm
+from bili.aegis.probe.attacker_mas import AttackerMAS
+from bili.aegis.probe.budget import BudgetState
+from bili.aegis.probe.exceptions import JudgeUnavailableError
+from bili.aegis.probe.policies import POLICY_REGISTRY
+from bili.aegis.probe.schema import (
+    ProbeObjective,
+    ProbeOutcome,
+    ProbeOutcomeReason,
+    ProbeSession,
+)
+from bili.aegis.suites._helpers import CONFIG_PATHS, find_repo_root
+from bili.aegis.suites.probe._csv import append_probe_csv_row
+from bili.aegis.suites.probe.payloads.probe_objectives import PROBE_OBJECTIVE_LIBRARY
+
+LOGGER = logging.getLogger(__name__)
+
+DEFAULT_RESULTS_DIR: str = "bili/aegis/suites/probe/results"
+
+# ---------------------------------------------------------------------------
+# Default fake-LLM script used in --stub mode. Returns a small number of
+# plausible-shaped JSON responses for each node type so the entire pipeline
+# runs end-to-end without hitting the network.
+# ---------------------------------------------------------------------------
+
+_STUB_PLANNER_JSON = (
+    '{"improvement": "try roleplay since direct ask failed", '
+    '"attack_angle": "stub_roleplay", '
+    '"rationale": "stub rationale for offline testing"}'
+)
+
+_STUB_LADDER_JSON = (
+    '{"ladder": ["benign opener", "ask about topic", "probe deeper", '
+    '"recontextualize", "indirect framing", "specific request", '
+    '"persuasive framing", "final ask"]}'
+)
+
+_STUB_REFINEMENTS_JSON = (
+    '{"refinements": ["refinement A", "refinement B", "refinement C"]}'
+)
+
+_STUB_JUDGE_JSON = (
+    '{"score": 1, "reasoning": "stub partial progress", "confidence": "low"}'
+)
+
+_STUB_CRAFTER_OUTPUT = (
+    "Stub crafted payload — used in --stub mode for offline pipeline testing."
+)
+
+
+def _stub_responder(prompt: str) -> tuple[str, int, int]:
+    """Return a deterministic plausibly-shaped response for any PROBE prompt."""
+    lowered = prompt.lower()
+    if "ladder" in lowered and "json object with one key" in lowered:
+        return _STUB_LADDER_JSON, 80, 40
+    if "refinements" in lowered:
+        return _STUB_REFINEMENTS_JSON, 80, 40
+    if "score guide" in lowered or "Score this turn" in prompt:
+        return _STUB_JUDGE_JSON, 30, 15
+    if "FRAMEWORK" in prompt and "SEPARATOR" in prompt:
+        return _STUB_CRAFTER_OUTPUT, 60, 30
+    if "improvement" in lowered and "attack_angle" in lowered:
+        return _STUB_PLANNER_JSON, 50, 25
+    # Fallback: return planner JSON shape (least harmful default)
+    return _STUB_PLANNER_JSON, 50, 25
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def _build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="run_probe_suite",
         description="AEGIS-PROBE: autonomous adaptive red-teaming suite.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--stub",
         action="store_true",
-        help="Skip all LLM calls; useful for framework wiring tests.",
+        help="Skip all real LLM calls; use deterministic fake responses.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--policies",
         nargs="+",
         default=["pair", "crescendo", "tap"],
         help="Policies to run (default: all three).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--objectives",
         nargs="+",
         default=None,
         help="Objective IDs (default: full library).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--configs",
         nargs="+",
         default=None,
         help="MAS YAML paths (default: CONFIG_PATHS from _helpers).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--seeds",
         nargs="+",
         type=int,
         default=[0],
         help="RNG seeds; one session per seed.",
     )
-    p.add_argument("--budget-turns", type=int, default=12)
-    p.add_argument("--budget-tokens", type=int, default=200_000)
-    p.add_argument("--budget-cost-usd", type=float, default=5.0)
-    p.add_argument(
+    parser.add_argument("--budget-turns", type=int, default=12)
+    parser.add_argument("--budget-tokens", type=int, default=200_000)
+    parser.add_argument("--budget-cost-usd", type=float, default=5.0)
+    parser.add_argument(
         "--baseline-results",
         type=str,
         default=None,
-        help="Path to baseline results dir (required for Tier 3).",
+        help="Path to baseline results dir (for Tier 3 reference text).",
     )
-    p.add_argument(
+    parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Run at 1/10 scale (first objective only, single seed).",
+        help="Run at 1/10 scale (first objective × first config × first seed).",
     )
-    p.add_argument("--results-dir", type=str, default="bili/aegis/suites/probe/results")
-    return p
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=DEFAULT_RESULTS_DIR,
+        help=f"Output directory (default: {DEFAULT_RESULTS_DIR}).",
+    )
+    parser.add_argument(
+        "--attacker-model",
+        type=str,
+        default="deepseek-chat",
+        help="Real-LLM attacker model_name (ignored in --stub mode).",
+    )
+    parser.add_argument(
+        "--victim-model",
+        type=str,
+        default="us.anthropic.claude-sonnet-4-6",
+        help="Victim model_name used for the cross-provider check.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        type=str,
+        default="gemini-2.5-flash",
+        help="Real-LLM judge model_name (ignored in --stub mode).",
+    )
+    parser.add_argument(
+        "--attacker-model-type",
+        type=str,
+        default="remote_aws_bedrock",
+        help="IRIS load_model model_type for the attacker.",
+    )
+    parser.add_argument(
+        "--judge-model-type",
+        type=str,
+        default="remote_google_vertex",
+        help="IRIS load_model model_type for the judge.",
+    )
+    return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for the PROBE suite runner. See module docstring."""
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def _resolve_config_paths(args: argparse.Namespace, repo_root: Path) -> list[Path]:
+    """Convert relative config strings to absolute Paths under repo_root."""
+    paths = args.configs if args.configs else CONFIG_PATHS
+    resolved: list[Path] = []
+    for path in paths:
+        p = Path(path)
+        if not p.is_absolute():
+            p = repo_root / p
+        resolved.append(p)
+    return resolved
+
+
+def _filter_objectives(args: argparse.Namespace) -> list[ProbeObjective]:
+    """Apply `--objectives` whitelist to the global library."""
+    if args.objectives:
+        wanted = set(args.objectives)
+        return [obj for obj in PROBE_OBJECTIVE_LIBRARY if obj.objective_id in wanted]
+    return list(PROBE_OBJECTIVE_LIBRARY)
+
+
+def _apply_smoke_filter(
+    objectives: list[ProbeObjective],
+    config_paths: list[Path],
+    seeds: list[int],
+) -> tuple[list[ProbeObjective], list[Path], list[int]]:
+    """``--smoke``: first item only in each dimension."""
+    return (
+        objectives[:1] if objectives else [],
+        config_paths[:1] if config_paths else [],
+        seeds[:1] if seeds else [],
+    )
+
+
+def _model_config(is_stub: bool, role: str, args: argparse.Namespace) -> dict[str, Any]:
+    """Build the model_config dict for one role.
+
+    In --stub mode, model_name is ``None`` so :meth:`ProbeSession.to_csv_row`
+    reports stub_mode='stub'. Note: model_name is still set to the user-
+    supplied name so the cross-provider check has a real prefix to inspect
+    (the override LLM bypasses any actual provider call).
+    """
+    if role == "attacker":
+        return {
+            "model_type": args.attacker_model_type,
+            "model_name": args.attacker_model if not is_stub else "deepseek-chat",
+            "temperature": 0.7,
+        }
+    if role == "victim":
+        return {
+            "model_type": "remote_aws_bedrock",
+            "model_name": args.victim_model,
+            "temperature": 0.0,
+        }
+    if role == "judge":
+        return {
+            "model_type": args.judge_model_type,
+            "model_name": args.judge_model if not is_stub else "gemini-2.5-flash",
+            "temperature": 0.0,
+        }
+    raise ValueError(f"Unknown role: {role!r}")
+
+
+def _build_session_id(
+    objective_id: str, mas_id: str, policy_name: str, seed: int
+) -> str:
+    """Build a unique, sortable session_id."""
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{objective_id}__{mas_id}__{policy_name}__seed{seed}__{timestamp}"
+
+
+def _victim_mas_shape_from_config(config: Any) -> dict[str, Any]:
+    """Extract the shape dict the PayloadCrafterNode wants from a MASConfig."""
+    agents = []
+    for agent in getattr(config, "agents", []) or []:
+        agents.append(
+            {
+                "agent_id": getattr(agent, "agent_id", ""),
+                "role": getattr(agent, "role", ""),
+            }
+        )
+    return {
+        "mas_id": getattr(config, "mas_id", "<unknown>"),
+        "agents": agents,
+        "entry_point": (agents[0]["agent_id"] if agents else "<unknown>"),
+    }
+
+
+def _write_sidecar(session: ProbeSession, results_dir: Path) -> Path:
+    """Write the per-session sidecar JSON under {mas_id}/sessions/."""
+    mas_dir = results_dir / session.victim_mas_id / "sessions"
+    mas_dir.mkdir(parents=True, exist_ok=True)
+    sidecar_path = mas_dir / f"{session.session_id}.json"
+    payload = session.to_sidecar_json()
+    with open(sidecar_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, default=str)
+    return sidecar_path
+
+
+def _print_summary(
+    matrix_rows: list[dict[str, Any]],
+    error_rows: list[dict[str, Any]],
+) -> None:
+    """Print a one-block summary to stdout matching the existing AEGIS style."""
+    print()  # noqa: T201
+    print("=" * 60)  # noqa: T201
+    print("PROBE Suite Summary")  # noqa: T201
+    print("=" * 60)  # noqa: T201
+    print(f"Total sessions: {len(matrix_rows)}")  # noqa: T201
+    if not matrix_rows:
+        print("(No sessions ran)")  # noqa: T201
+        return
+    reasons = Counter(row["terminated_reason"] for row in matrix_rows)
+    for reason, count in sorted(reasons.items()):
+        print(f"  {reason:30s} {count}")  # noqa: T201
+    ttc_values = [
+        int(row["turns_to_compromise"])
+        for row in matrix_rows
+        if row["turns_to_compromise"] not in ("", None)
+    ]
+    if ttc_values:
+        print(f"  turns_to_compromise (success rows): {ttc_values}")  # noqa: T201
+    if error_rows:
+        print(f"Framework errors: {len(error_rows)}")  # noqa: T201
+        for err in error_rows:
+            print(f"  - {err['error']}")  # noqa: T201
+
+
+def _load_baseline_text(baseline_dir: Optional[Path], mas_id: str) -> Optional[str]:
+    """Read a baseline text excerpt for the judge prompt.
+
+    Tries ``baseline_dir/{mas_id}.json`` first; falls back to None.
+    Defensive: returns None on any error (the judge prompt will render
+    'NOT AVAILABLE' in that case).
+    """
+    if baseline_dir is None:
+        return None
+    candidate = baseline_dir / f"{mas_id}.json"
+    if not candidate.exists():
+        return None
+    try:
+        data = json.loads(candidate.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data.get("final_text") or data.get("summary")
+        return str(data)
+    except (OSError, json.JSONDecodeError):  # pragma: no cover
+        return None
+
+
+def _make_failed_session_row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    objective: ProbeObjective,
+    config_path: Path,
+    policy_name: str,
+    seed: int,
+    attacker_cfg: dict[str, Any],
+    judge_cfg: dict[str, Any],
+    reason: ProbeOutcomeReason,
+    error: str,
+) -> dict[str, Any]:
+    """Build a CSV row representing a session that never started.
+
+    Used when ``MASExecutor.run`` or ``AttackerMAS.initialize`` itself
+    fails: we still want a row in the matrix recording why this
+    (objective, config, policy, seed) tuple didn't run.
+    """
+    mas_id = config_path.stem
+    session_id = _build_session_id(objective.objective_id, mas_id, policy_name, seed)
+    session = ProbeSession(
+        session_id=session_id,
+        objective=objective,
+        victim_mas_id=mas_id,
+        victim_mas_path=str(config_path),
+        policy_name=policy_name,
+        rng_seed=seed,
+        attacker_model_config=attacker_cfg,
+        judge_model_config=judge_cfg,
+    )
+    session.final_outcome = ProbeOutcome(
+        reason=reason,
+        final_tier3_score=0,
+        turns_to_compromise=None,
+        total_duration_ms=0.0,
+        total_tokens_attacker=0,
+        total_tokens_victim=0,
+        total_tokens_judge=0,
+        estimated_cost_usd=0.0,
+    )
+    LOGGER.warning(
+        "Session %s did not run (%s): %s", session.session_id, reason.value, error
+    )
+    return session.to_csv_row()
+
+
+def _run_one_session(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    objective: ProbeObjective,
+    config_path: Path,
+    policy_name: str,
+    policy_cls: type,
+    seed: int,
+    args: argparse.Namespace,
+    is_stub: bool,
+    baseline_text: Optional[str],
+) -> tuple[dict[str, Any], Path]:
+    """Run one (objective, config, policy, seed) session.
+
+    Returns ``(csv_row, sidecar_path)``. Failures inside this function
+    are caught and converted to a CSV row with the appropriate
+    ``terminated_reason``; this function does NOT raise.
+    """
+    # Local imports keep AETHER / IRIS loading out of import-time of this
+    # module; helpful for unit-testing the CLI in isolation.
+    from bili.aegis.probe._llm import (  # pylint: disable=import-outside-toplevel
+        ProbeLLM,
+    )
+    from bili.aether.config.loader import (  # pylint: disable=import-outside-toplevel
+        load_mas_from_yaml,
+    )
+    from bili.aether.runtime.executor import (  # pylint: disable=import-outside-toplevel
+        MASExecutor,
+    )
+
+    attacker_cfg = _model_config(is_stub, "attacker", args)
+    judge_cfg = _model_config(is_stub, "judge", args)
+    victim_cfg = _model_config(is_stub, "victim", args)
+
+    # Choose LLM overrides
+    crafter_llm: Optional[ProbeLLM] = (
+        _FakeLLM(responder=_stub_responder) if is_stub else None
+    )
+    evaluator_llm: Optional[ProbeLLM] = (
+        _FakeLLM(responder=_stub_responder) if is_stub else None
+    )
+    policy_llm: ProbeLLM = (
+        _FakeLLM(responder=_stub_responder)
+        if is_stub
+        else resolve_real_llm(attacker_cfg)
+    )
+
+    # Load victim MAS
+    try:
+        config = load_mas_from_yaml(str(config_path))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        row = _make_failed_session_row(
+            objective,
+            config_path,
+            policy_name,
+            seed,
+            attacker_cfg,
+            judge_cfg,
+            ProbeOutcomeReason.VICTIM_CRASHED,
+            f"Failed to load YAML: {exc}",
+        )
+        return row, Path()
+
+    mas_id = getattr(config, "mas_id", config_path.stem)
+    session_id = _build_session_id(objective.objective_id, mas_id, policy_name, seed)
+    victim_shape = _victim_mas_shape_from_config(config)
+    if is_stub:
+        # In stub mode we don't initialize MASExecutor; build a dict-shaped
+        # stub that mimics MASExecutor.run's return.
+        victim_executor: Any = _StubVictimExecutor()
+    else:
+        try:
+            victim_executor = MASExecutor(config)
+            victim_executor.initialize()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            row = _make_failed_session_row(
+                objective,
+                config_path,
+                policy_name,
+                seed,
+                attacker_cfg,
+                judge_cfg,
+                ProbeOutcomeReason.VICTIM_CRASHED,
+                f"Failed to initialize MASExecutor: {exc}",
+            )
+            return row, Path()
+
+    # Build session + budget
+    session = ProbeSession(
+        session_id=session_id,
+        objective=objective,
+        victim_mas_id=mas_id,
+        victim_mas_path=str(config_path),
+        policy_name=policy_name,
+        rng_seed=seed,
+        attacker_model_config=(attacker_cfg if not is_stub else {"model_name": None}),
+        judge_model_config=judge_cfg,
+    )
+    budget = BudgetState(
+        max_turns=args.budget_turns,
+        max_tokens_total=args.budget_tokens,
+        max_wall_clock_seconds=None,
+        max_cost_usd=args.budget_cost_usd,
+    )
+
+    # Wire attacker
+    policy = policy_cls(llm=policy_llm)
+    attacker = AttackerMAS(
+        policy=policy,
+        attacker_model_config=attacker_cfg,
+        judge_model_config=judge_cfg,
+        victim_model_config=victim_cfg,
+        victim_mas_shape=victim_shape,
+        crafter_llm_override=crafter_llm,
+        evaluator_llm_override=evaluator_llm,
+    )
+
+    try:
+        attacker.initialize()
+    except JudgeUnavailableError as exc:
+        row = _make_failed_session_row(
+            objective,
+            config_path,
+            policy_name,
+            seed,
+            attacker_cfg,
+            judge_cfg,
+            ProbeOutcomeReason.JUDGE_UNAVAILABLE,
+            str(exc),
+        )
+        return row, Path()
+
+    session = attacker.run_session(
+        session, victim_executor, budget, baseline_output_text=baseline_text
+    )
+
+    sidecar_path = _write_sidecar(session, Path(args.results_dir))
+    return session.to_csv_row(), sidecar_path
+
+
+class _StubVictimExecutor:  # pylint: disable=too-few-public-methods
+    """Stub MASExecutor used in --stub mode.
+
+    Returns a canned dict shaped like a real :class:`MASExecutionResult`
+    so the observer's defensive code paths still get exercised.
+    """
+
+    def initialize(self) -> None:
+        """No-op (mimics MASExecutor.initialize)."""
+
+    def run(  # pylint: disable=unused-argument
+        self, input_data: dict[str, Any], save_results: bool = True
+    ) -> dict[str, Any]:
+        """Return a deterministic fake victim execution."""
+        return {
+            "messages": [
+                {
+                    "type": "ai",
+                    "content": "Stub victim response: I acknowledge your message.",
+                }
+            ],
+            "agent_results": [
+                {
+                    "agent_id": "stub_agent",
+                    "role": "reviewer",
+                    "input_state": {},
+                    "output_state": {"text": "Stub agent output"},
+                }
+            ],
+        }
+
+
+def main(  # pylint: disable=too-many-locals
+    argv: Optional[list[str]] = None,
+) -> int:
+    """Entry point. See module docstring."""
     args = _build_argparser().parse_args(argv)
-    _ = args  # pylint: disable=unused-variable  # consumed by TODO loop body
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
-    # TODO: implement the suite loop:
-    #
-    # 1. Resolve config paths (default to CONFIG_PATHS from _helpers).
-    # 2. Load PROBE_OBJECTIVE_LIBRARY; filter by args.objectives.
-    # 3. For each (objective, mas_config, policy, seed):
-    #      session = ProbeSession(...)
-    #      session.budget = BudgetState(
-    #          max_turns=args.budget_turns,
-    #          max_tokens_total=args.budget_tokens,
-    #          max_cost_usd=args.budget_cost_usd,
-    #      )
-    #      attacker = AttackerMAS(policy, attacker_cfg, judge_cfg)
-    #      attacker.initialize()
-    #      victim = MASExecutor.from_yaml(mas_config)
-    #      victim.initialize()
-    #      session = attacker.run_session(session, victim)
-    #      _write_sidecar(session, args.results_dir)
-    #      _append_csv_row(session, args.results_dir)
-    # 4. Print summary block matching existing AEGIS runner format.
-    # 5. Return 0 on success, non-zero on framework error.
+    repo_root = find_repo_root()
+    config_paths = _resolve_config_paths(args, repo_root)
+    objectives = _filter_objectives(args)
+    seeds = args.seeds
 
-    raise NotImplementedError("PROBE runner scaffold; see TODO inline.")
+    if args.smoke:
+        objectives, config_paths, seeds = _apply_smoke_filter(
+            objectives, config_paths, seeds
+        )
+
+    # Filter policies by what the registry exposes
+    policy_clses = {
+        name: POLICY_REGISTRY[name] for name in args.policies if name in POLICY_REGISTRY
+    }
+    missing = set(args.policies) - set(policy_clses)
+    if missing:
+        LOGGER.error("Unknown policy names: %s", sorted(missing))
+        return 1
+
+    results_dir = Path(args.results_dir)
+    if not results_dir.is_absolute():
+        results_dir = repo_root / results_dir
+    args.results_dir = str(results_dir)
+
+    baseline_dir: Optional[Path] = None
+    if args.baseline_results:
+        baseline_dir = Path(args.baseline_results)
+        if not baseline_dir.is_absolute():
+            baseline_dir = repo_root / baseline_dir
+
+    matrix_rows: list[dict[str, Any]] = []
+    error_rows: list[dict[str, Any]] = []
+    is_stub = args.stub
+
+    for objective in objectives:
+        for config_path in config_paths:
+            mas_id = config_path.stem
+            baseline_text = _load_baseline_text(baseline_dir, mas_id)
+            for policy_name, policy_cls in policy_clses.items():
+                for seed in seeds:
+                    try:
+                        row, _ = _run_one_session(
+                            objective=objective,
+                            config_path=config_path,
+                            policy_name=policy_name,
+                            policy_cls=policy_cls,
+                            seed=seed,
+                            args=args,
+                            is_stub=is_stub,
+                            baseline_text=baseline_text,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        LOGGER.exception(
+                            "Framework error on (%s, %s, %s, seed=%s)",
+                            objective.objective_id,
+                            mas_id,
+                            policy_name,
+                            seed,
+                        )
+                        error_rows.append({"error": str(exc)})
+                        continue
+                    matrix_rows.append(row)
+                    append_probe_csv_row(row, results_dir)
+
+    _print_summary(matrix_rows, error_rows)
+    # Framework errors (vs per-session terminal reasons) → non-zero exit
+    return 1 if error_rows else 0
 
 
 if __name__ == "__main__":
