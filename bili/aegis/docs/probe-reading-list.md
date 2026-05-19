@@ -221,24 +221,32 @@ The order matters. Build bottom-up so each layer can be tested in isolation.
   recognizable multi-turn attack trajectory.
 
 **Exit criteria:**
-- [ ] All four node `__call__` methods implemented and unit-tested
-- [ ] `BudgetState` enforces all four axes
-- [ ] PAIR session against `simple_chain.yaml` runs end-to-end
-- [ ] Sidecar JSON is valid and human-readable
-- [ ] Cost of one PAIR session is documented (will inform Week 3 budget)
+- [x] All four node `__call__` methods implemented and unit-tested
+- [x] `BudgetState` enforces all four axes
+- [x] PAIR session against `simple_chain.yaml` runs end-to-end (fake LLM; real-LLM smoke is Commit K, scheduled for next session)
+- [x] Sidecar JSON is valid and human-readable
+- [ ] Cost of one PAIR session is documented (pending real-LLM smoke; `scripts/aegis/run_probe_smoke.ps1` is ready to run)
 
-### Week 3 — Crescendo, TAP, evaluation, writeup
+**Actual landing (2026-05-19):** all of Week 2 plus Crescendo and TAP
+(originally scheduled for Week 3) shipped in the same multi-day session.
+13 commits on `claude/upbeat-keller-418605` worktree branch, 350 tests
+passing, pylint 10.00/10. See `HANDOFF.md` § 6.1 for the per-commit
+breakdown. Real-LLM smoke + writeup remain.
 
-**Day 1: CrescendoPolicy.**
+### Week 3 — Crescendo (DONE), TAP (DONE), evaluation, writeup
+
+**Day 1: CrescendoPolicy.** ✅ DONE (Commit G, 2026-05-19)
 - Ladder generation on turn 0.
 - Per-rung intent prompts.
-- One real-LLM session run + manual inspection.
+- One real-LLM session run + manual inspection. ← pending Commit K
 
-**Day 2: TAPPolicy.**
+**Day 2: TAPPolicy.** ✅ DONE (Commit H, 2026-05-19)
 - Tree data structure + expansion + pruning.
-- One real-LLM session run + manual inspection.
+- One real-LLM session run + manual inspection. ← pending Commit K
 - (TAP is the riskiest of the three; if it slips into Day 3, the headline
   result still works with PAIR + Crescendo and you note TAP as v0.2.)
+  *In practice TAP shipped cleanly with two minor bugs caught and fixed
+  during testing — see HANDOFF § 8.6.*
 
 **Day 3: Run the evaluation matrix.**
 - Generate a baseline using `bili/aegis/suites/baseline/run_baseline.py`
