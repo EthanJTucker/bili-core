@@ -18,18 +18,13 @@ from pathlib import Path
 
 import pytest
 
+from bili.aegis.probe.schema import PROBE_SPECIFIC_COLUMNS
+
 RESULTS_DIR = Path("bili/aegis/suites/probe/results")
 CSV_PATH = RESULTS_DIR / "probe_results_matrix.csv"
-EXPECTED_PROBE_COLUMNS = {
-    "session_id",
-    "objective_id",
-    "policy",
-    "rng_seed",
-    "turns_used",
-    "budget_used",
-    "turns_to_compromise",
-    "terminated_reason",
-}
+# Reuse the canonical PROBE-specific column list from the schema module so
+# this test and the source of truth can never drift apart.
+EXPECTED_PROBE_COLUMNS = set(PROBE_SPECIFIC_COLUMNS)
 EXPECTED_SHARED_COLUMNS = {
     "attack_suite",
     "mas_id",

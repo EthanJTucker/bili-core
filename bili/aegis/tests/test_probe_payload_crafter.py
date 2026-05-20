@@ -10,78 +10,44 @@ Covers:
   * defensive against missing victim_mas_shape fields
 """
 
-# pylint: disable=duplicate-code  # session builder fixture overlaps with other PROBE tests
-
 from typing import Any, Optional
 
 from bili.aegis.probe._llm import _FakeLLM
 from bili.aegis.probe.nodes.payload_crafter import PayloadCrafterNode
-from bili.aegis.probe.schema import (
-    AttackIntent,
-    ProbeObjective,
-    ProbeSession,
-    ProbeTurn,
-    TurnVerdict,
+from bili.aegis.probe.schema import AttackIntent, ProbeSession, ProbeTurn
+from bili.aegis.tests.conftest import (
+    make_probe_intent,
+    make_probe_session,
+    make_probe_turn,
 )
-
-# =========================================================================
-# Builders
-# =========================================================================
-
-
-def _objective() -> ProbeObjective:
-    return ProbeObjective(
-        objective_id="pr_test_001",
-        harm_class="misinformation",
-        severity="high",
-        objective_text="cause X",
-        success_criterion="Y is produced",
-    )
 
 
 def _intent(
     angle: str = "appeal-to-authority",
     rationale: str = "agent defers to senior roles",
 ) -> AttackIntent:
-    return AttackIntent(
-        target_agent_role="reviewer",
-        attack_angle=angle,
-        rationale=rationale,
-    )
+    """Local helper for varying attack_angle / rationale in tests."""
+    return make_probe_intent(attack_angle=angle, rationale=rationale)
 
 
 def _turn(idx: int, angle: str = "x") -> ProbeTurn:
-    return ProbeTurn(
+    """Local helper: a prior turn with payload and observation keyed to ``idx``."""
+    return make_probe_turn(
         turn_index=idx,
-        intent=AttackIntent(target_agent_role="r", attack_angle=angle, rationale="r"),
+        intent=make_probe_intent(
+            target_agent_role="r", attack_angle=angle, rationale="r"
+        ),
         payload_text=f"prior payload {idx}",
-        victim_output={},
         propagation_path=["a"],
-        influenced_agents=[],
         observation_summary=f"observation for turn {idx}",
-        verdict=TurnVerdict.NO_PROGRESS,
-        tier3_score=0,
         tier3_reasoning="",
         tier3_confidence="low",
-        duration_ms=1.0,
-        tokens_attacker=0,
-        tokens_victim=0,
-        tokens_judge=0,
     )
 
 
 def _session(turns: Optional[list[ProbeTurn]] = None) -> ProbeSession:
-    return ProbeSession(
-        session_id="sess-1",
-        objective=_objective(),
-        victim_mas_id="m",
-        victim_mas_path="p",
-        policy_name="pair",
-        rng_seed=0,
-        attacker_model_config={},
-        judge_model_config={},
-        turns=turns or [],
-    )
+    """Local helper: a fresh session with optional prior turns."""
+    return make_probe_session(turns=turns or [])
 
 
 _DEFAULT_SHAPE: dict[str, Any] = {

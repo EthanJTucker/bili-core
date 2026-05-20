@@ -24,13 +24,15 @@ concerns (telemetry, future caching).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from bili.aegis.probe.policies.base import AttackPolicy
 from bili.aegis.probe.schema import AttackIntent, ProbeSession
 
 
-class PlannerNode:  # pylint: disable=too-few-public-methods
+@dataclass
+class PlannerNode:
     """Delegating wrapper over :meth:`AttackPolicy.plan_next_intent`.
 
     Stateless: all session state lives in :class:`ProbeSession` and all
@@ -40,9 +42,8 @@ class PlannerNode:  # pylint: disable=too-few-public-methods
     (policies own their own LLM via their own ``__init__``).
     """
 
-    def __init__(self, policy: AttackPolicy, model_config: dict[str, Any]) -> None:
-        self.policy = policy
-        self.model_config = model_config
+    policy: AttackPolicy
+    model_config: dict[str, Any]
 
     def __call__(self, session: ProbeSession) -> tuple[AttackIntent, int, int]:
         """Produce the next ``(AttackIntent, tokens_in, tokens_out)`` triple.

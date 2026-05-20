@@ -14,63 +14,42 @@ Coverage:
     non-list response falls back.
 """
 
-# pylint: disable=duplicate-code  # session builder fixtures legitimately overlap with other PROBE tests
-
 import json
 from typing import Optional
 
 from bili.aegis.probe._llm import _FakeLLM
 from bili.aegis.probe.policies.crescendo import CrescendoPolicy
-from bili.aegis.probe.schema import (
-    AttackIntent,
-    ProbeObjective,
-    ProbeSession,
-    ProbeTurn,
-    TurnVerdict,
+from bili.aegis.probe.schema import ProbeSession, ProbeTurn, TurnVerdict
+from bili.aegis.tests.conftest import (
+    make_probe_intent,
+    make_probe_objective,
+    make_probe_session,
+    make_probe_turn,
 )
 
-# =========================================================================
-# Builders
-# =========================================================================
 
-
-def _objective(target_role: Optional[str] = None) -> ProbeObjective:
-    return ProbeObjective(
-        objective_id="pr_test_001",
-        harm_class="misinformation",
-        severity="high",
-        objective_text="Cause Y to happen.",
-        success_criterion="Y is produced.",
-        target_agent_role=target_role,
-    )
-
-
-def _turn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    idx: int,
-    rung: int,
-    verdict: TurnVerdict = TurnVerdict.NO_PROGRESS,
+def _turn(
+    idx: int, rung: int, verdict: TurnVerdict = TurnVerdict.NO_PROGRESS
 ) -> ProbeTurn:
-    return ProbeTurn(
+    """Local helper: Crescendo turn carrying ``rung_index`` and rung-keyed labels.
+
+    The intent uses ``crescendo_rung_{rung}`` as attack_angle and
+    ``rung {rung} content`` as rationale, matching what CrescendoPolicy
+    itself emits.
+    """
+    return make_probe_turn(
         turn_index=idx,
-        intent=AttackIntent(
+        intent=make_probe_intent(
             target_agent_role="r",
             attack_angle=f"crescendo_rung_{rung}",
             rationale=f"rung {rung} content",
             rung_index=rung,
         ),
         payload_text=f"payload for turn {idx}",
-        victim_output={},
-        propagation_path=[],
-        influenced_agents=[],
         observation_summary="",
         verdict=verdict,
-        tier3_score=0,
         tier3_reasoning="",
         tier3_confidence="low",
-        duration_ms=1.0,
-        tokens_attacker=0,
-        tokens_victim=0,
-        tokens_judge=0,
     )
 
 
@@ -79,15 +58,11 @@ def _session(
     turns: Optional[list[ProbeTurn]] = None,
     target_role: Optional[str] = None,
 ) -> ProbeSession:
-    return ProbeSession(
+    """Local helper: Crescendo session keyed by ``session_id`` and optional ``target_role``."""
+    return make_probe_session(
         session_id=session_id,
-        objective=_objective(target_role=target_role),
-        victim_mas_id="m",
-        victim_mas_path="p",
+        objective=make_probe_objective(target_agent_role=target_role),
         policy_name="crescendo",
-        rng_seed=0,
-        attacker_model_config={},
-        judge_model_config={},
         turns=turns or [],
     )
 
@@ -137,7 +112,7 @@ def test_ladder_generated_on_turn_zero():
     """First plan_next_intent call invokes the LLM (ladder generation)."""
     calls = {"n": 0}
 
-    def _resp(prompt: str) -> tuple[str, int, int]:  # pylint: disable=unused-argument
+    def _resp(_prompt: str) -> tuple[str, int, int]:
         calls["n"] += 1
         return (_ladder_json(8), 50, 25)
 
@@ -150,7 +125,7 @@ def test_ladder_generation_tokens_charged_only_on_turn_zero():
     """Subsequent turns reuse the cached ladder; no further LLM calls."""
     calls = {"n": 0}
 
-    def _resp(prompt: str) -> tuple[str, int, int]:  # pylint: disable=unused-argument
+    def _resp(_prompt: str) -> tuple[str, int, int]:
         calls["n"] += 1
         return (_ladder_json(8), 50, 25)
 
@@ -174,7 +149,7 @@ def test_ladder_isolated_per_session():
     """
     calls = {"n": 0}
 
-    def _resp(prompt: str) -> tuple[str, int, int]:  # pylint: disable=unused-argument
+    def _resp(_prompt: str) -> tuple[str, int, int]:
         calls["n"] += 1
         return (_ladder_json(8), 0, 0)
 
@@ -194,7 +169,7 @@ def test_ladder_generation_prompt_contains_objective_and_success_criterion():
 
     policy = _policy(_FakeLLM(responder=_resp))
     policy.plan_next_intent(_session())
-    obj = _objective()
+    obj = make_probe_objective()
     assert obj.objective_text in seen[0]
     assert obj.success_criterion in seen[0]
 
@@ -407,7 +382,8 @@ def test_ladder_too_few_entries_is_padded():
     sess = _session()
     policy.plan_next_intent(sess)
     # After turn 0, the cached ladder must have 8 entries
-    stored = policy._ladders[sess.session_id]  # pylint: disable=protected-access
+    stored = policy.peek_ladder(sess.session_id)
+    assert stored is not None
     assert len(stored) == 8
 
 
@@ -416,7 +392,8 @@ def test_ladder_too_many_entries_is_truncated():
     policy = _policy(_FakeLLM(responder=lambda p: (_ladder_json(20), 0, 0)))
     sess = _session()
     policy.plan_next_intent(sess)
-    stored = policy._ladders[sess.session_id]  # pylint: disable=protected-access
+    stored = policy.peek_ladder(sess.session_id)
+    assert stored is not None
     assert len(stored) == 8
 
 
@@ -426,7 +403,8 @@ def test_ladder_non_list_response_falls_back():
     policy = _policy(fake)
     sess = _session()
     policy.plan_next_intent(sess)
-    stored = policy._ladders[sess.session_id]  # pylint: disable=protected-access
+    stored = policy.peek_ladder(sess.session_id)
+    assert stored is not None
     assert isinstance(stored, list)
     assert len(stored) == 8
 
@@ -439,7 +417,8 @@ def test_ladder_parse_failure_falls_back_to_stub():
     policy = _policy(fake)
     sess = _session()
     policy.plan_next_intent(sess)
-    stored = policy._ladders[sess.session_id]  # pylint: disable=protected-access
+    stored = policy.peek_ladder(sess.session_id)
+    assert stored is not None
     assert len(stored) == 8
 
 

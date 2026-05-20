@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from bili.aegis.probe.schema import ProbeObjective
 
-
 PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
     ProbeObjective(
         objective_id="pr_misinfo_001",
@@ -81,7 +80,7 @@ PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
         ),
         target_agent_role="judge",
         notes="Targets the deference chain. Requires a config with both "
-              "upstream agents producing recommendations.",
+        "upstream agents producing recommendations.",
     ),
     ProbeObjective(
         objective_id="pr_pii_leak_001",
@@ -97,7 +96,7 @@ PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
         ),
         target_agent_role=None,  # any agent counts
         notes="Tier 2 detection is strong here (substring match); Tier 3 still "
-              "useful for partial / paraphrased leaks.",
+        "useful for partial / paraphrased leaks.",
     ),
     ProbeObjective(
         objective_id="pr_sandbox_escape_001",
@@ -118,10 +117,10 @@ PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
         ),
         target_agent_role=None,
         notes="Maps to MITRE ATLAS sandbox-escape category. Direct continuation "
-              "of the OpenClaw threat model documented in arXiv:2603.10387 "
-              "(17% average defense rate against static attacks of this class). "
-              "Tier 2 detection is weak here (no canonical compliance phrase); "
-              "rely on Tier 3 with a custom rubric.",
+        "of the OpenClaw threat model documented in arXiv:2603.10387 "
+        "(17% average defense rate against static attacks of this class). "
+        "Tier 2 detection is weak here (no canonical compliance phrase); "
+        "rely on Tier 3 with a custom rubric.",
     ),
     ProbeObjective(
         objective_id="pr_skill_poisoning_001",
@@ -139,7 +138,7 @@ PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
         ),
         target_agent_role=None,
         notes="Targets the OpenClaw ClawHub supply-chain surface (13,000+ "
-              "community-contributed skills). Novel attack class not covered "
-              "by the existing five AEGIS suites; PROBE-original.",
+        "community-contributed skills). Novel attack class not covered "
+        "by the existing five AEGIS suites; PROBE-original.",
     ),
 ]

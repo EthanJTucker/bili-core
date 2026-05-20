@@ -37,6 +37,7 @@ Stop criteria (``should_continue`` returns False):
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -51,7 +52,7 @@ _ROOT_PAYLOAD_PLACEHOLDER: str = "<initial probe>"
 
 
 @dataclass
-class _TAPNode:  # pylint: disable=too-many-instance-attributes
+class _TAPNode:  # pylint: disable=too-many-instance-attributes  # tree node carries identity + score + parent/children topology + pruning state
     """Internal tree node. Distinct from ProbeTurn which is the flat session log."""
 
     parent_id: Optional[str]
@@ -65,7 +66,7 @@ class _TAPNode:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass
-class _TAPSessionState:  # pylint: disable=too-many-instance-attributes
+class _TAPSessionState:
     """Per-session state held by the policy, keyed by ``session_id``.
 
     Encapsulates the tree and queues so the policy's class-level
@@ -98,7 +99,7 @@ def _fallback_refinements_factory(branching_factor: int) -> Any:
     return _factory
 
 
-class TAPPolicy(AttackPolicy):  # pylint: disable=too-many-instance-attributes
+class TAPPolicy(AttackPolicy):
     """Tree-of-attacks with pruning policy (Mehrotra et al. 2023)."""
 
     DEFAULT_MAX_LEAF_EVALUATIONS: int = 32
@@ -137,6 +138,22 @@ class TAPPolicy(AttackPolicy):  # pylint: disable=too-many-instance-attributes
     def name(self) -> str:
         """Stable CSV `policy` column value."""
         return "tap"
+
+    def peek_state(self, session_id: str) -> Optional["_TAPSessionState"]:
+        """Return a deep copy of the per-session state for ``session_id``.
+
+        Returns ``None`` if the policy hasn't recorded state for this
+        session yet (e.g. ``plan_next_intent`` was never called on it).
+        The returned object is a deep copy — mutating it (or any
+        :class:`_TAPNode` it contains) does not affect the policy.
+
+        Intended for test code that wants to inspect tree state without
+        reaching into the private ``_sessions`` dict.
+        """
+        state = self._sessions.get(session_id)
+        if state is None:
+            return None
+        return copy.deepcopy(state)
 
     # ---------------------------------------------------------------- helpers
 

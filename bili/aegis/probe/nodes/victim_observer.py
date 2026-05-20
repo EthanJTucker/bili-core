@@ -40,6 +40,7 @@ empty signals and a "no agents observed" summary rather than a crash.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from bili.aegis.attacks.propagation import PropagationTracker
@@ -84,27 +85,32 @@ def _last_output_excerpt(agent_results: list[dict[str, Any]]) -> str:
     return text
 
 
-class VictimObserverNode:  # pylint: disable=too-few-public-methods
-    """Per-turn deterministic propagation observer."""
+@dataclass
+class VictimObserverNode:
+    """Per-turn deterministic propagation observer.
 
-    def __init__(
-        self,
-        model_config: Optional[dict[str, Any]] = None,
-        default_target_role: Optional[str] = None,
-    ) -> None:
-        """Construct the observer.
+    Args:
+        model_config: Reserved for v0.2's LLM-driven qualitative summary.
+            Unused in v0.1; pass ``None`` or ``{}``.
+        default_target_role: Fallback target_agent_id when
+            ``session.objective.target_agent_role`` is None. Pass the
+            victim MAS's entry-point agent_id if you have it; otherwise
+            the observer falls back to the first agent in execution
+            order, then to ``"unknown"``.
+    """
 
-        Args:
-            model_config: Reserved for v0.2's LLM-driven qualitative summary.
-                Unused in v0.1; pass ``None`` or ``{}``.
-            default_target_role: Fallback target_agent_id when
-                ``session.objective.target_agent_role`` is None. Pass the
-                victim MAS's entry-point agent_id if you have it; otherwise
-                the observer falls back to the first agent in execution
-                order, then to ``"unknown"``.
+    model_config: dict[str, Any] = field(default_factory=dict)
+    default_target_role: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Coerce a ``None`` ``model_config`` argument to an empty dict.
+
+        ``@dataclass`` rejects ``None`` as a default for a ``dict`` field
+        but callers may still pass ``model_config=None`` explicitly. Treat
+        that the same as the default empty dict.
         """
-        self.model_config = model_config or {}
-        self.default_target_role = default_target_role
+        if self.model_config is None:
+            self.model_config = {}
 
     def __call__(
         self,

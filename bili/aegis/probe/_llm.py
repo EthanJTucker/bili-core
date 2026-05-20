@@ -14,13 +14,18 @@ provider-specific response objects.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
+
+from langchain_core.messages import HumanMessage
 
 LOGGER = logging.getLogger(__name__)
 
 
 @runtime_checkable
-class ProbeLLM(Protocol):  # pylint: disable=too-few-public-methods
+class ProbeLLM(
+    Protocol
+):  # pylint: disable=too-few-public-methods  # Protocol with a single ``invoke`` method is the explicit design
     """Minimal LLM interface used by every PROBE node and policy.
 
     Implementations return a 3-tuple of ``(response_text, tokens_in,
@@ -100,20 +105,20 @@ class _FakeLLM:
         self._current_label = label
 
 
-class _LangChainLLMAdapter:  # pylint: disable=too-few-public-methods
-    """Wraps a LangChain ChatModel to satisfy the :class:`ProbeLLM` Protocol."""
+@dataclass
+class _LangChainLLMAdapter:
+    """Wraps a LangChain ChatModel to satisfy the :class:`ProbeLLM` Protocol.
 
-    def __init__(self, chat_model: Any) -> None:
-        self._chat = chat_model
+    Stored as ``chat_model`` (the public dataclass field name). Tests
+    that previously read ``adapter._chat`` should switch to
+    ``adapter.chat_model``.
+    """
+
+    chat_model: Any
 
     def invoke(self, prompt: str) -> tuple[str, int, int]:
         """Invoke the underlying ChatModel with ``prompt`` as a HumanMessage."""
-        # Local imports keep PROBE importable without LangChain available
-        from langchain_core.messages import (  # pylint: disable=import-outside-toplevel
-            HumanMessage,
-        )
-
-        response = self._chat.invoke([HumanMessage(content=prompt)])
+        response = self.chat_model.invoke([HumanMessage(content=prompt)])
         text = (
             response.content
             if isinstance(response.content, str)
@@ -124,7 +129,7 @@ class _LangChainLLMAdapter:  # pylint: disable=too-few-public-methods
             LOGGER.warning(
                 "LangChain response has no usage_metadata; token counts "
                 "default to (0, 0). Model: %s",
-                type(self._chat).__name__,
+                type(self.chat_model).__name__,
             )
             return text, 0, 0
         return (
@@ -149,7 +154,9 @@ def resolve_real_llm(model_config: dict[str, Any]) -> ProbeLLM:
     from ``response.usage_metadata``; when absent, falls back to ``(0, 0)``
     with a ``LOGGER.warning``.
     """
-    # Local import keeps this module importable without the IRIS loader
+    # IRIS llm_loader transitively imports torch, transformers, and
+    # Streamlit — multi-second import cost. Defer until a real (non-stub)
+    # LLM is actually needed so stub-only PROBE tests stay fast.
     from bili.iris.loaders.llm_loader import (  # pylint: disable=import-outside-toplevel
         load_model,
     )

@@ -4,40 +4,12 @@ The PlannerNode is a thin delegating wrapper; these tests assert that it
 neither mutates nor short-circuits the policy contract.
 """
 
-# pylint: disable=duplicate-code  # session builder fixture overlaps with other PROBE tests
-
 from typing import Any
 
 from bili.aegis.probe.nodes.planner import PlannerNode
 from bili.aegis.probe.policies.base import AttackPolicy
-from bili.aegis.probe.schema import AttackIntent, ProbeObjective, ProbeSession
-
-# =========================================================================
-# Builders
-# =========================================================================
-
-
-def _objective() -> ProbeObjective:
-    return ProbeObjective(
-        objective_id="pr_test_001",
-        harm_class="misinformation",
-        severity="high",
-        objective_text="cause X",
-        success_criterion="Y is produced",
-    )
-
-
-def _session() -> ProbeSession:
-    return ProbeSession(
-        session_id="sess-1",
-        objective=_objective(),
-        victim_mas_id="m",
-        victim_mas_path="p",
-        policy_name="stub",
-        rng_seed=0,
-        attacker_model_config={},
-        judge_model_config={},
-    )
+from bili.aegis.probe.schema import AttackIntent, ProbeSession
+from bili.aegis.tests.conftest import make_probe_session as _session
 
 
 class _StubPolicy(AttackPolicy):

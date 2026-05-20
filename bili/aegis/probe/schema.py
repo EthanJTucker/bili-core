@@ -100,7 +100,7 @@ class AttackIntent:
 
 
 @dataclass
-class ProbeTurn:  # pylint: disable=too-many-instance-attributes
+class ProbeTurn:  # pylint: disable=too-many-instance-attributes  # session log row: every field is a directly serialized result of one turn
     """One turn in a multi-turn session."""
 
     turn_index: int
@@ -121,7 +121,7 @@ class ProbeTurn:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass
-class ProbeOutcome:  # pylint: disable=too-many-instance-attributes
+class ProbeOutcome:  # pylint: disable=too-many-instance-attributes  # session footer: outcome reason + 4 aggregated numeric axes
     """Final session-level outcome."""
 
     reason: ProbeOutcomeReason
@@ -153,8 +153,10 @@ _CROSS_SUITE_COLUMNS: tuple[str, ...] = (
     "attack_suite",
 )
 
-# PROBE-specific columns added on top of the cross-suite schema.
-_PROBE_COLUMNS: tuple[str, ...] = (
+# PROBE-specific columns added on top of the cross-suite schema. Public so
+# downstream consumers (notably ``test_probe_structural``) can reuse the
+# canonical list instead of redeclaring it.
+PROBE_SPECIFIC_COLUMNS: tuple[str, ...] = (
     "session_id",
     "objective_id",
     "policy",
@@ -165,7 +167,7 @@ _PROBE_COLUMNS: tuple[str, ...] = (
     "terminated_reason",
 )
 
-PROBE_CSV_COLUMNS: tuple[str, ...] = _CROSS_SUITE_COLUMNS + _PROBE_COLUMNS
+PROBE_CSV_COLUMNS: tuple[str, ...] = _CROSS_SUITE_COLUMNS + PROBE_SPECIFIC_COLUMNS
 
 
 def _stringify_enums(obj: Any) -> Any:
@@ -182,7 +184,7 @@ def _stringify_enums(obj: Any) -> Any:
 
 
 @dataclass
-class ProbeSession:  # pylint: disable=too-many-instance-attributes
+class ProbeSession:  # pylint: disable=too-many-instance-attributes  # session-level data container; matches execution_result.py convention
     """A multi-turn dialogue between attacker MAS and victim MAS."""
 
     session_id: str

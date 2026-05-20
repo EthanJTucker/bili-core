@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class BudgetState:  # pylint: disable=too-many-instance-attributes
+class BudgetState:  # pylint: disable=too-many-instance-attributes  # 4 limits + 4 used + price_table (reserved for v0.2) = 9 fields
     """
     Tracks all four budget axes for a session.
 

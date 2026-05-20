@@ -93,6 +93,20 @@ class CrescendoPolicy(AttackPolicy):
         """Stable CSV `policy` column value."""
         return "crescendo"
 
+    def peek_ladder(self, session_id: str) -> list[str] | None:
+        """Return a defensive copy of the cached ladder for ``session_id``.
+
+        Returns ``None`` if no ladder has been generated for this session
+        yet (the policy lazily generates the ladder on the first
+        ``plan_next_intent`` call). The returned list is a shallow copy
+        of strings — safe to mutate without affecting policy state.
+
+        Intended for test code that wants to inspect cached state without
+        reaching into the private ``_ladders`` dict.
+        """
+        ladder = self._ladders.get(session_id)
+        return list(ladder) if ladder is not None else None
+
     # ---------------------------------------------------------------- rung math
 
     def _next_rung_index(self, session: ProbeSession) -> int:

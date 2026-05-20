@@ -5,41 +5,19 @@ PropagationTracker integration, the target_agent_id resolution priority,
 and the procedural-summary format.
 """
 
-# pylint: disable=duplicate-code  # session builder fixture overlaps with other PROBE tests
-
 from typing import Any, Optional
 
 import pytest
 
 from bili.aegis.probe.nodes.victim_observer import VictimObserverNode
-from bili.aegis.probe.schema import ProbeObjective, ProbeSession
-
-# =========================================================================
-# Builders
-# =========================================================================
-
-
-def _objective(target_role: Optional[str] = None) -> ProbeObjective:
-    return ProbeObjective(
-        objective_id="pr_test_001",
-        harm_class="misinformation",
-        severity="high",
-        objective_text="cause X",
-        success_criterion="Y is produced",
-        target_agent_role=target_role,
-    )
+from bili.aegis.probe.schema import ProbeSession
+from bili.aegis.tests.conftest import make_probe_objective, make_probe_session
 
 
 def _session(target_role: Optional[str] = None) -> ProbeSession:
-    return ProbeSession(
-        session_id="sess-1",
-        objective=_objective(target_role=target_role),
-        victim_mas_id="m",
-        victim_mas_path="p",
-        policy_name="pair",
-        rng_seed=0,
-        attacker_model_config={},
-        judge_model_config={},
+    """Local helper: session whose objective optionally targets ``target_role``."""
+    return make_probe_session(
+        objective=make_probe_objective(target_agent_role=target_role)
     )
 
 
@@ -402,9 +380,14 @@ def test_payload_under_20_chars_does_not_count_as_received():
 
 
 def test_model_config_defaults_to_empty_dict():
-    """Passing no model_config still produces a usable observer."""
+    """Passing no model_config still produces a usable observer.
+
+    Asserts dict-type AND empty separately so an implementation that
+    leaves ``None`` (which is also falsy) would still fail.
+    """
     obs = VictimObserverNode()
-    assert obs.model_config == {}
+    assert isinstance(obs.model_config, dict)
+    assert len(obs.model_config) == 0
 
 
 def test_model_config_can_be_passed_for_forward_compat():

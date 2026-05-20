@@ -23,6 +23,7 @@ contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from bili.aegis.probe._llm import ProbeLLM, resolve_real_llm
@@ -73,33 +74,36 @@ def _continuity_block(session: ProbeSession) -> str:
     return "\n".join(lines)
 
 
-class PayloadCrafterNode:  # pylint: disable=too-few-public-methods
-    """LLM-driven crafter producing one victim-facing prompt per call."""
+@dataclass
+class PayloadCrafterNode:
+    """LLM-driven crafter producing one victim-facing prompt per call.
 
-    def __init__(
-        self,
-        model_config: dict[str, Any],
-        victim_mas_shape: dict[str, Any],
-        llm_override: Optional[ProbeLLM] = None,
-    ) -> None:
-        """Construct the crafter.
+    Args:
+        model_config: kwargs passed to
+            :func:`bili.aegis.probe._llm.resolve_real_llm`. Must contain
+            ``model_type`` and ``model_name`` (plus any
+            provider-specific kwargs) when ``llm_override`` is None.
+        victim_mas_shape: a dict describing the victim MAS topology.
+            The crafter reads ``mas_id`` (str), ``agents`` (list of
+            ``{agent_id, role}`` dicts), and ``entry_point`` (str).
+            Defensive against missing keys.
+        llm_override: test hook; when supplied, ``model_config`` is
+            stored but ``resolve_real_llm`` is NOT called.
+    """
 
-        Args:
-            model_config: kwargs passed to
-                :func:`bili.aegis.probe._llm.resolve_real_llm`. Must contain
-                ``model_type`` and ``model_name`` (plus any
-                provider-specific kwargs) when ``llm_override`` is None.
-            victim_mas_shape: a dict describing the victim MAS topology.
-                The crafter reads ``mas_id`` (str), ``agents`` (list of
-                ``{agent_id, role}`` dicts), and ``entry_point`` (str).
-                Defensive against missing keys.
-            llm_override: test hook; when supplied, ``model_config`` is
-                stored but ``resolve_real_llm`` is NOT called.
-        """
-        self.model_config = model_config
-        self.victim_mas_shape = victim_mas_shape
-        self._llm: ProbeLLM = (
-            llm_override if llm_override is not None else resolve_real_llm(model_config)
+    model_config: dict[str, Any]
+    victim_mas_shape: dict[str, Any]
+    llm_override: Optional[ProbeLLM] = None
+    # Resolved by __post_init__; declared with init=False so callers don't
+    # accidentally pass the wrong LLM.
+    _llm: ProbeLLM = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Resolve the LLM from ``model_config`` unless ``llm_override`` is set."""
+        self._llm = (
+            self.llm_override
+            if self.llm_override is not None
+            else resolve_real_llm(self.model_config)
         )
 
     def __call__(

@@ -18,35 +18,17 @@ Coverage:
     _score_previous_turn but evaluation budget only counts each turn once.
 """
 
-# pylint: disable=duplicate-code  # session builder fixtures legitimately overlap with other PROBE tests
-
 import json
 from typing import Optional
 
 from bili.aegis.probe._llm import _FakeLLM
 from bili.aegis.probe.policies.tap import TAPPolicy
-from bili.aegis.probe.schema import (
-    AttackIntent,
-    ProbeObjective,
-    ProbeSession,
-    ProbeTurn,
-    TurnVerdict,
+from bili.aegis.probe.schema import AttackIntent, ProbeSession, ProbeTurn, TurnVerdict
+from bili.aegis.tests.conftest import (
+    make_probe_objective,
+    make_probe_session,
+    make_probe_turn,
 )
-
-# =========================================================================
-# Builders
-# =========================================================================
-
-
-def _objective(target_role: Optional[str] = None) -> ProbeObjective:
-    return ProbeObjective(
-        objective_id="pr_test_001",
-        harm_class="misinformation",
-        severity="high",
-        objective_text="Cause Y.",
-        success_criterion="Y is produced.",
-        target_agent_role=target_role,
-    )
 
 
 def _session(
@@ -54,41 +36,29 @@ def _session(
     turns: Optional[list[ProbeTurn]] = None,
     target_role: Optional[str] = None,
 ) -> ProbeSession:
-    return ProbeSession(
+    """Local helper: TAP session keyed by ``session_id`` / ``target_role``."""
+    return make_probe_session(
         session_id=session_id,
-        objective=_objective(target_role=target_role),
-        victim_mas_id="m",
-        victim_mas_path="p",
+        objective=make_probe_objective(target_agent_role=target_role),
         policy_name="tap",
-        rng_seed=0,
-        attacker_model_config={},
-        judge_model_config={},
         turns=turns or [],
     )
 
 
-def _make_turn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    turn_index: int,
-    intent: AttackIntent,
-    tier3_score: int = 0,
-    verdict: TurnVerdict = TurnVerdict.NO_PROGRESS,
-) -> ProbeTurn:
-    return ProbeTurn(
+def _make_turn(turn_index: int, intent: AttackIntent, **kwargs) -> ProbeTurn:
+    """Local helper: TAP turn with ``payload_text='payload-{turn_index}'``.
+
+    ``tier3_score`` / ``verdict`` and any other ProbeTurn field can be
+    passed through ``**kwargs`` (forwarded to :func:`make_probe_turn`).
+    """
+    return make_probe_turn(
         turn_index=turn_index,
         intent=intent,
         payload_text=f"payload-{turn_index}",
-        victim_output={},
-        propagation_path=[],
-        influenced_agents=[],
         observation_summary="",
-        verdict=verdict,
-        tier3_score=tier3_score,
         tier3_reasoning="",
         tier3_confidence="low",
-        duration_ms=1.0,
-        tokens_attacker=0,
-        tokens_victim=0,
-        tokens_judge=0,
+        **kwargs,
     )
 
 
@@ -98,7 +68,7 @@ def _refinements_json(branching_factor: int, marker: str = "ref") -> str:
     )
 
 
-def _policy(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _policy(
     llm: _FakeLLM,
     max_leaf_evaluations: int = 32,
     max_depth: int = 6,
@@ -114,7 +84,7 @@ def _policy(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     )
 
 
-def _drive_turn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _drive_turn(
     policy: TAPPolicy,
     session: ProbeSession,
     score: int = 0,
@@ -189,7 +159,8 @@ def test_turn_zero_creates_root_node():
     # No LLM call on turn 0 (root has no expansion yet)
     assert (t_in, t_out) == (0, 0)
     # Tree has exactly one node (the root)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert len(state.tree) == 1
     assert "n0" in state.tree
     root = state.tree["n0"]
@@ -219,7 +190,8 @@ def test_turn_one_expands_root_into_branching_factor_children():
     _drive_turn(policy, sess, score=1)
     # Turn 1: expansion
     intent, t_in, t_out = policy.plan_next_intent(sess)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     # 1 root + 3 children = 4 nodes
     assert len(state.tree) == 4
     # Expansion LLM was called
@@ -238,7 +210,7 @@ def test_pending_children_consumed_round_robin_before_next_expansion():
     """
     llm_calls = {"n": 0}
 
-    def _resp(prompt: str) -> tuple[str, int, int]:  # pylint: disable=unused-argument
+    def _resp(_prompt: str) -> tuple[str, int, int]:
         llm_calls["n"] += 1
         return (_refinements_json(3), 10, 5)
 
@@ -311,7 +283,8 @@ def test_selects_higher_scoring_leaf_when_choosing_what_to_expand():
     # Turn 4: all 3 children drained. Now expand highest-score leaf,
     # which is child #2 (score 2).
     intent_4, _, _ = policy.plan_next_intent(sess)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     # The first pending grand-child was just popped for turn 4. Its parent
     # is the one we selected (i.e., the child with score 2).
     selected_grand = state.tree[state.turn_to_node[len(sess.turns)]]
@@ -365,7 +338,8 @@ def test_pruning_streak_increments_on_non_improvement():
     _drive_turn(policy, sess, score=2)
     # Turn 1: child1 scores 1 (≤ 2 → streak += 1)
     _drive_turn(policy, sess, score=1)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     # The just-evaluated child is at index n1
     assert state.non_improvement_streak["n1"] == 1
 
@@ -379,7 +353,8 @@ def test_pruning_streak_resets_on_improvement():
     _drive_turn(policy, sess, score=0)
     # Turn 1: child1 scores 2 (> 0 → reset streak to 0)
     _drive_turn(policy, sess, score=2)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     # Streak should be 0 (not 1)
     assert state.non_improvement_streak["n1"] == 0
 
@@ -393,7 +368,8 @@ def test_node_marked_pruned_after_n_consecutive_non_improvements():
     _drive_turn(policy, sess, score=2)
     # Turn 1: child1 scores 1 (streak=1, NOT yet pruned)
     _drive_turn(policy, sess, score=1)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert state.tree["n1"].pruned is False
     # Turn 2: child2 (a different node) scores 1 → its OWN streak goes to 1
     # (not n1's). Note: streaks are per-node, so n1 stays at streak=1.
@@ -422,7 +398,8 @@ def test_node_pruned_when_streak_threshold_one():
     _drive_turn(policy, sess, score=2)
     # Turn 1: child1 scores 1 (≤ 2 → streak=1 ≥ 1 → pruned)
     _drive_turn(policy, sess, score=1)
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert state.tree["n1"].pruned is True
 
 
@@ -503,13 +480,15 @@ def test_state_does_not_leak_across_two_sessions():
     _drive_turn(policy, sess_a, score=1)
     _drive_turn(policy, sess_a, score=1)  # expand root
     # Session A has 4 nodes (root + 3 children)
-    state_a = policy._sessions["A"]  # pylint: disable=protected-access
+    state_a = policy.peek_state("A")
+    assert state_a is not None
     assert len(state_a.tree) == 4
 
     # Fresh session B
     sess_b = _session(session_id="B")
     _drive_turn(policy, sess_b, score=1)
-    state_b = policy._sessions["B"]  # pylint: disable=protected-access
+    state_b = policy.peek_state("B")
+    assert state_b is not None
     assert len(state_b.tree) == 1  # B has only its own root
 
 
@@ -528,7 +507,8 @@ def test_score_previous_turn_is_idempotent():
     policy = _policy(fake)
     sess = _session()
     _drive_turn(policy, sess, score=1)  # 1 eval consumed
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert state.evaluations_consumed == 1
     # Call should_continue again (mimicking double-invocation paranoia)
     policy.should_continue(sess)
@@ -553,7 +533,8 @@ def test_refinements_too_few_padded():
     sess = _session()
     _drive_turn(policy, sess, score=1)  # root
     policy.plan_next_intent(sess)  # turn 1 expansion
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     root_children = state.tree["n0"].children
     assert len(root_children) == 3
 
@@ -571,7 +552,8 @@ def test_refinements_too_many_truncated():
     sess = _session()
     _drive_turn(policy, sess, score=1)  # root
     policy.plan_next_intent(sess)  # expand
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert len(state.tree["n0"].children) == 3
 
 
@@ -588,7 +570,8 @@ def test_refinements_non_list_falls_back():
     sess = _session()
     _drive_turn(policy, sess, score=1)  # root
     policy.plan_next_intent(sess)  # expand
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert len(state.tree["n0"].children) == 3
 
 
@@ -599,7 +582,8 @@ def test_refinements_double_parse_failure_uses_factory():
     sess = _session()
     _drive_turn(policy, sess, score=1)  # root
     policy.plan_next_intent(sess)  # expansion fires fallback
-    state = policy._sessions[sess.session_id]  # pylint: disable=protected-access
+    state = policy.peek_state(sess.session_id)
+    assert state is not None
     assert len(state.tree["n0"].children) == 3
 
 

@@ -6,6 +6,7 @@ resolve_real_llm is mocked so the tests don't require provider credentials.
 """
 
 import logging
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -180,10 +181,11 @@ def test_langchain_adapter_satisfies_probellm_protocol():
 def test_langchain_adapter_reads_usage_metadata():
     """When response.usage_metadata is present, tokens flow through."""
 
-    class _MockChat:  # pylint: disable=too-few-public-methods
+    @dataclass
+    class _MockChat:
         """Minimal LangChain ChatModel stub that returns a fixed response."""
 
-        def invoke(self, messages):  # pylint: disable=unused-argument
+        def invoke(self, _messages):
             """Return a canned response with token usage metadata."""
             return SimpleNamespace(
                 content="hello world",
@@ -200,10 +202,11 @@ def test_langchain_adapter_reads_usage_metadata():
 def test_langchain_adapter_logs_warning_when_usage_metadata_absent(caplog):
     """Without usage_metadata, falls back to (0, 0) and emits a warning."""
 
-    class _MockChat:  # pylint: disable=too-few-public-methods
+    @dataclass
+    class _MockChat:
         """ChatModel stub whose response carries no usage_metadata."""
 
-        def invoke(self, messages):  # pylint: disable=unused-argument
+        def invoke(self, _messages):
             """Return a response with usage_metadata set to None."""
             return SimpleNamespace(content="hi", usage_metadata=None)
 
@@ -217,10 +220,11 @@ def test_langchain_adapter_logs_warning_when_usage_metadata_absent(caplog):
 def test_langchain_adapter_stringifies_non_string_content():
     """If chat_model.content is not a str, it's coerced via str()."""
 
-    class _MockChat:  # pylint: disable=too-few-public-methods
+    @dataclass
+    class _MockChat:
         """ChatModel stub whose response.content is a list, not a string."""
 
-        def invoke(self, messages):  # pylint: disable=unused-argument
+        def invoke(self, _messages):
             """Return a response with non-string list content."""
             return SimpleNamespace(
                 content=["multi", "part", "list"],

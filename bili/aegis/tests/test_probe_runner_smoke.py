@@ -5,12 +5,9 @@ MASExecutor — uses the in-process _StubVictimExecutor and _FakeLLM) so
 the entire pipeline can be exercised in CI.
 """
 
-# pylint: disable=duplicate-code  # session/objective builders legitimately overlap with other PROBE tests
-
 import csv
 import json
 from pathlib import Path
-
 
 from bili.aegis.probe.schema import PROBE_CSV_COLUMNS
 from bili.aegis.suites.probe._csv import CSV_FILENAME

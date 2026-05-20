@@ -29,6 +29,7 @@ and the runner catches it and writes a session row with
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from bili.aegis.evaluator.evaluator_config import (
@@ -90,30 +91,31 @@ def _score_to_verdict(score: int) -> TurnVerdict:
     return TurnVerdict.PARTIAL_PROGRESS
 
 
-class SuccessEvaluatorNode:  # pylint: disable=too-few-public-methods
-    """Per-turn Tier 3 judge driven by a cross-provider LLM."""
+@dataclass
+class SuccessEvaluatorNode:
+    """Per-turn Tier 3 judge driven by a cross-provider LLM.
 
-    def __init__(
-        self,
-        judge_model_config: dict[str, Any],
-        attacker_model_config: dict[str, Any],
-        victim_model_config: dict[str, Any],
-        llm_override: Optional[ProbeLLM] = None,
-    ) -> None:
-        """Resolve the judge LLM and run the cross-provider hard check.
+    Raises:
+        JudgeUnavailableError: if any of the three model_names has an
+            unrecognized provider prefix, or if the judge family equals
+            either the attacker family or the victim family.
+    """
 
-        Raises:
-            JudgeUnavailableError: if any of the three model_names has an
-                unrecognized provider prefix, or if the judge family equals
-                either the attacker family or the victim family.
-        """
-        self.judge_model_config = judge_model_config
-        self.attacker_model_config = attacker_model_config
-        self.victim_model_config = victim_model_config
+    judge_model_config: dict[str, Any]
+    attacker_model_config: dict[str, Any]
+    victim_model_config: dict[str, Any]
+    llm_override: Optional[ProbeLLM] = None
+    # Resolved by __post_init__; declared with init=False so callers don't
+    # accidentally pass a pre-resolved LLM in the wrong slot.
+    _llm: ProbeLLM = field(init=False)
 
-        judge_family = self._require_family(judge_model_config, role="judge")
-        attacker_family = self._require_family(attacker_model_config, role="attacker")
-        victim_family = self._require_family(victim_model_config, role="victim")
+    def __post_init__(self) -> None:
+        """Run the cross-provider hard check, then resolve the judge LLM."""
+        judge_family = self._require_family(self.judge_model_config, role="judge")
+        attacker_family = self._require_family(
+            self.attacker_model_config, role="attacker"
+        )
+        victim_family = self._require_family(self.victim_model_config, role="victim")
 
         if judge_family == attacker_family:
             raise JudgeUnavailableError(
@@ -131,10 +133,10 @@ class SuccessEvaluatorNode:  # pylint: disable=too-few-public-methods
             )
 
         # Defer real-LLM resolution until after the cheap hard check passes.
-        self._llm: ProbeLLM = (
-            llm_override
-            if llm_override is not None
-            else resolve_real_llm(judge_model_config)
+        self._llm = (
+            self.llm_override
+            if self.llm_override is not None
+            else resolve_real_llm(self.judge_model_config)
         )
 
     @staticmethod

@@ -35,11 +35,15 @@ import json
 import logging
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+from pydantic import ValidationError
+
 from bili.aegis.probe._llm import _FakeLLM, resolve_real_llm
-from bili.aegis.probe.attacker_mas import AttackerMAS
+from bili.aegis.probe.attacker_mas import AttackerMAS, AttackerModelConfigs
 from bili.aegis.probe.budget import BudgetState
 from bili.aegis.probe.exceptions import JudgeUnavailableError
 from bili.aegis.probe.policies import POLICY_REGISTRY
@@ -351,11 +355,44 @@ def _load_baseline_text(baseline_dir: Optional[Path], mas_id: str) -> Optional[s
         return None
 
 
-def _make_failed_session_row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    objective: ProbeObjective,
-    config_path: Path,
-    policy_name: str,
-    seed: int,
+@dataclass(frozen=True)
+class _SessionIdentity:
+    """Identifies a single PROBE session by its (objective, config, policy, seed) tuple.
+
+    Used as a bundle so the helpers that need all four don't grow into
+    ``too-many-arguments`` territory. ``mas_id`` is derived from
+    ``config_path.stem`` to match the convention used everywhere else in
+    the runner.
+    """
+
+    objective: ProbeObjective
+    config_path: Path
+    policy_name: str
+    seed: int
+
+    @property
+    def mas_id(self) -> str:
+        """Match the runner-wide convention: ``mas_id == config_path.stem``."""
+        return self.config_path.stem
+
+
+@dataclass(frozen=True)
+class _SessionRunSpec:
+    """Full specification for one ``_run_one_session`` invocation.
+
+    Bundles the per-session inputs (identity + policy_cls + stub flag +
+    optional baseline) into one object so the function takes ``(spec,
+    args)`` rather than 8 positional arguments.
+    """
+
+    identity: _SessionIdentity
+    policy_cls: type
+    is_stub: bool
+    baseline_text: Optional[str]
+
+
+def _make_failed_session_row(
+    identity: _SessionIdentity,
     attacker_cfg: dict[str, Any],
     judge_cfg: dict[str, Any],
     reason: ProbeOutcomeReason,
@@ -367,15 +404,19 @@ def _make_failed_session_row(  # pylint: disable=too-many-arguments,too-many-pos
     fails: we still want a row in the matrix recording why this
     (objective, config, policy, seed) tuple didn't run.
     """
-    mas_id = config_path.stem
-    session_id = _build_session_id(objective.objective_id, mas_id, policy_name, seed)
+    session_id = _build_session_id(
+        identity.objective.objective_id,
+        identity.mas_id,
+        identity.policy_name,
+        identity.seed,
+    )
     session = ProbeSession(
         session_id=session_id,
-        objective=objective,
-        victim_mas_id=mas_id,
-        victim_mas_path=str(config_path),
-        policy_name=policy_name,
-        rng_seed=seed,
+        objective=identity.objective,
+        victim_mas_id=identity.mas_id,
+        victim_mas_path=str(identity.config_path),
+        policy_name=identity.policy_name,
+        rng_seed=identity.seed,
         attacker_model_config=attacker_cfg,
         judge_model_config=judge_cfg,
     )
@@ -395,71 +436,134 @@ def _make_failed_session_row(  # pylint: disable=too-many-arguments,too-many-pos
     return session.to_csv_row()
 
 
-def _run_one_session(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    objective: ProbeObjective,
-    config_path: Path,
-    policy_name: str,
-    policy_cls: type,
-    seed: int,
-    args: argparse.Namespace,
-    is_stub: bool,
-    baseline_text: Optional[str],
-) -> tuple[dict[str, Any], Path]:
-    """Run one (objective, config, policy, seed) session.
+@dataclass
+class _AttackerDependencies:
+    """Resolved per-session attacker dependencies.
 
-    Returns ``(csv_row, sidecar_path)``. Failures inside this function
-    are caught and converted to a CSV row with the appropriate
-    ``terminated_reason``; this function does NOT raise.
+    Bundles the model configs (attacker / judge / victim) with the three
+    LLM overrides chosen based on ``is_stub``. Built once per session by
+    :func:`_resolve_attacker_dependencies` and consumed by both the
+    session-row failure path and the AttackerMAS wiring path.
     """
-    # Local imports keep AETHER / IRIS loading out of import-time of this
-    # module; helpful for unit-testing the CLI in isolation.
-    from bili.aegis.probe._llm import (  # pylint: disable=import-outside-toplevel
-        ProbeLLM,
-    )
-    from bili.aether.config.loader import (  # pylint: disable=import-outside-toplevel
-        load_mas_from_yaml,
-    )
-    from bili.aether.runtime.executor import (  # pylint: disable=import-outside-toplevel
-        MASExecutor,
-    )
 
+    attacker_cfg: dict[str, Any]
+    judge_cfg: dict[str, Any]
+    victim_cfg: dict[str, Any]
+    # ``Any`` here avoids pulling ProbeLLM into module-level imports.
+    crafter_llm: Any
+    evaluator_llm: Any
+    policy_llm: Any
+
+
+def _resolve_attacker_dependencies(
+    args: argparse.Namespace, is_stub: bool
+) -> _AttackerDependencies:
+    """Build the per-session attacker configs and LLM overrides.
+
+    In stub mode, all three LLMs are :class:`_FakeLLM` instances driven by
+    ``_stub_responder``. In real-LLM mode, the policy LLM is resolved
+    against ``attacker_cfg`` and the crafter / evaluator LLMs are left
+    ``None`` so the attacker constructs them per its own config.
+    """
     attacker_cfg = _model_config(is_stub, "attacker", args)
     judge_cfg = _model_config(is_stub, "judge", args)
     victim_cfg = _model_config(is_stub, "victim", args)
+    if is_stub:
+        crafter_llm = _FakeLLM(responder=_stub_responder)
+        evaluator_llm = _FakeLLM(responder=_stub_responder)
+        policy_llm = _FakeLLM(responder=_stub_responder)
+    else:
+        crafter_llm = None
+        evaluator_llm = None
+        policy_llm = resolve_real_llm(attacker_cfg)
+    return _AttackerDependencies(
+        attacker_cfg=attacker_cfg,
+        judge_cfg=judge_cfg,
+        victim_cfg=victim_cfg,
+        crafter_llm=crafter_llm,
+        evaluator_llm=evaluator_llm,
+        policy_llm=policy_llm,
+    )
 
-    # Choose LLM overrides
-    crafter_llm: Optional[ProbeLLM] = (
-        _FakeLLM(responder=_stub_responder) if is_stub else None
-    )
-    evaluator_llm: Optional[ProbeLLM] = (
-        _FakeLLM(responder=_stub_responder) if is_stub else None
-    )
-    policy_llm: ProbeLLM = (
-        _FakeLLM(responder=_stub_responder)
-        if is_stub
-        else resolve_real_llm(attacker_cfg)
+
+def _build_attacker_for_session(
+    deps: _AttackerDependencies,
+    policy_cls: type,
+    victim_shape: dict[str, Any],
+) -> AttackerMAS:
+    """Wire an :class:`AttackerMAS` from resolved dependencies + policy class."""
+    policy = policy_cls(llm=deps.policy_llm)
+    return AttackerMAS(
+        policy=policy,
+        model_configs=AttackerModelConfigs(
+            attacker=deps.attacker_cfg,
+            judge=deps.judge_cfg,
+            victim=deps.victim_cfg,
+        ),
+        victim_mas_shape=victim_shape,
+        crafter_llm_override=deps.crafter_llm,
+        evaluator_llm_override=deps.evaluator_llm,
     )
 
-    # Load victim MAS
+
+@dataclass
+class _VictimReady:
+    """A successfully loaded victim MAS + the IDs that depend on it."""
+
+    mas_id: str
+    session_id: str
+    victim_shape: dict[str, Any]
+    victim_executor: Any
+
+
+def _load_victim(
+    spec: _SessionRunSpec, deps: _AttackerDependencies
+) -> tuple[Optional[dict[str, Any]], Optional[_VictimReady]]:
+    """Load the victim YAML and prepare the executor.
+
+    Returns ``(failed_row, victim_ready)``; exactly one of the two is
+    non-``None``. ``failed_row`` is populated when YAML loading or
+    MASExecutor initialization fails (both → ``VICTIM_CRASHED``).
+    """
+    # Local imports keep AETHER / IRIS loading out of import-time of this
+    # module; helpful for unit-testing the CLI in isolation.
+    from bili.aether.config.loader import (  # pylint: disable=import-outside-toplevel  # defer AETHER load until a session actually runs
+        load_mas_from_yaml,
+    )
+    from bili.aether.runtime.executor import (  # pylint: disable=import-outside-toplevel  # defer AETHER load until a session actually runs
+        MASExecutor,
+    )
+
     try:
-        config = load_mas_from_yaml(str(config_path))
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+        config = load_mas_from_yaml(str(spec.identity.config_path))
+    except (
+        FileNotFoundError,
+        OSError,
+        ValueError,
+        yaml.YAMLError,
+        ValidationError,
+    ) as exc:
+        # The exception types above match load_mas_from_yaml's documented
+        # failure modes (Raises section); all of them get mapped to a
+        # VICTIM_CRASHED row.
         row = _make_failed_session_row(
-            objective,
-            config_path,
-            policy_name,
-            seed,
-            attacker_cfg,
-            judge_cfg,
+            spec.identity,
+            deps.attacker_cfg,
+            deps.judge_cfg,
             ProbeOutcomeReason.VICTIM_CRASHED,
             f"Failed to load YAML: {exc}",
         )
-        return row, Path()
+        return row, None
 
-    mas_id = getattr(config, "mas_id", config_path.stem)
-    session_id = _build_session_id(objective.objective_id, mas_id, policy_name, seed)
+    mas_id = getattr(config, "mas_id", spec.identity.mas_id)
+    session_id = _build_session_id(
+        spec.identity.objective.objective_id,
+        mas_id,
+        spec.identity.policy_name,
+        spec.identity.seed,
+    )
     victim_shape = _victim_mas_shape_from_config(config)
-    if is_stub:
+    if spec.is_stub:
         # In stub mode we don't initialize MASExecutor; build a dict-shaped
         # stub that mimics MASExecutor.run's return.
         victim_executor: Any = _StubVictimExecutor()
@@ -467,29 +571,43 @@ def _run_one_session(  # pylint: disable=too-many-arguments,too-many-positional-
         try:
             victim_executor = MASExecutor(config)
             victim_executor.initialize()
+        # MASExecutor init faults all map to VICTIM_CRASHED.
         except Exception as exc:  # pylint: disable=broad-exception-caught
             row = _make_failed_session_row(
-                objective,
-                config_path,
-                policy_name,
-                seed,
-                attacker_cfg,
-                judge_cfg,
+                spec.identity,
+                deps.attacker_cfg,
+                deps.judge_cfg,
                 ProbeOutcomeReason.VICTIM_CRASHED,
                 f"Failed to initialize MASExecutor: {exc}",
             )
-            return row, Path()
+            return row, None
 
-    # Build session + budget
-    session = ProbeSession(
+    return None, _VictimReady(
+        mas_id=mas_id,
         session_id=session_id,
-        objective=objective,
-        victim_mas_id=mas_id,
-        victim_mas_path=str(config_path),
-        policy_name=policy_name,
-        rng_seed=seed,
-        attacker_model_config=(attacker_cfg if not is_stub else {"model_name": None}),
-        judge_model_config=judge_cfg,
+        victim_shape=victim_shape,
+        victim_executor=victim_executor,
+    )
+
+
+def _build_session_and_budget(
+    spec: _SessionRunSpec,
+    deps: _AttackerDependencies,
+    victim: _VictimReady,
+    args: argparse.Namespace,
+) -> tuple[ProbeSession, BudgetState]:
+    """Construct the ProbeSession + BudgetState pair for one session."""
+    session = ProbeSession(
+        session_id=victim.session_id,
+        objective=spec.identity.objective,
+        victim_mas_id=victim.mas_id,
+        victim_mas_path=str(spec.identity.config_path),
+        policy_name=spec.identity.policy_name,
+        rng_seed=spec.identity.seed,
+        attacker_model_config=(
+            deps.attacker_cfg if not spec.is_stub else {"model_name": None}
+        ),
+        judge_model_config=deps.judge_cfg,
     )
     budget = BudgetState(
         max_turns=args.budget_turns,
@@ -497,43 +615,47 @@ def _run_one_session(  # pylint: disable=too-many-arguments,too-many-positional-
         max_wall_clock_seconds=None,
         max_cost_usd=args.budget_cost_usd,
     )
+    return session, budget
 
-    # Wire attacker
-    policy = policy_cls(llm=policy_llm)
-    attacker = AttackerMAS(
-        policy=policy,
-        attacker_model_config=attacker_cfg,
-        judge_model_config=judge_cfg,
-        victim_model_config=victim_cfg,
-        victim_mas_shape=victim_shape,
-        crafter_llm_override=crafter_llm,
-        evaluator_llm_override=evaluator_llm,
-    )
+
+def _run_one_session(
+    spec: _SessionRunSpec, args: argparse.Namespace
+) -> tuple[dict[str, Any], Path]:
+    """Run one (objective, config, policy, seed) session.
+
+    Returns ``(csv_row, sidecar_path)``. Failures inside this function
+    are caught and converted to a CSV row with the appropriate
+    ``terminated_reason``; this function does NOT raise.
+    """
+    deps = _resolve_attacker_dependencies(args, spec.is_stub)
+    failed_row, victim = _load_victim(spec, deps)
+    if victim is None:
+        return failed_row or {}, Path()
+
+    session, budget = _build_session_and_budget(spec, deps, victim, args)
+    attacker = _build_attacker_for_session(deps, spec.policy_cls, victim.victim_shape)
 
     try:
         attacker.initialize()
     except JudgeUnavailableError as exc:
         row = _make_failed_session_row(
-            objective,
-            config_path,
-            policy_name,
-            seed,
-            attacker_cfg,
-            judge_cfg,
+            spec.identity,
+            deps.attacker_cfg,
+            deps.judge_cfg,
             ProbeOutcomeReason.JUDGE_UNAVAILABLE,
             str(exc),
         )
         return row, Path()
 
     session = attacker.run_session(
-        session, victim_executor, budget, baseline_output_text=baseline_text
+        session, victim.victim_executor, budget, baseline_output_text=spec.baseline_text
     )
 
     sidecar_path = _write_sidecar(session, Path(args.results_dir))
     return session.to_csv_row(), sidecar_path
 
 
-class _StubVictimExecutor:  # pylint: disable=too-few-public-methods
+class _StubVictimExecutor:
     """Stub MASExecutor used in --stub mode.
 
     Returns a canned dict shaped like a real :class:`MASExecutionResult`
@@ -543,10 +665,15 @@ class _StubVictimExecutor:  # pylint: disable=too-few-public-methods
     def initialize(self) -> None:
         """No-op (mimics MASExecutor.initialize)."""
 
-    def run(  # pylint: disable=unused-argument
-        self, input_data: dict[str, Any], save_results: bool = True
-    ) -> dict[str, Any]:
-        """Return a deterministic fake victim execution."""
+    def run(self, _input_data: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        """Return a deterministic fake victim execution.
+
+        ``_input_data`` and any keyword args (e.g. ``save_results``) are
+        ignored — the stub returns the same canned output regardless of
+        input. ``**_kwargs`` absorbs interface-required arguments
+        (matching :meth:`MASExecutor.run`'s signature) without forcing a
+        ``pylint: disable=unused-argument`` on each.
+        """
         return {
             "messages": [
                 {
@@ -565,9 +692,91 @@ class _StubVictimExecutor:  # pylint: disable=too-few-public-methods
         }
 
 
-def main(  # pylint: disable=too-many-locals
-    argv: Optional[list[str]] = None,
-) -> int:
+@dataclass
+class _GridInputs:
+    """Inputs to ``_execute_session_grid`` — bundled to keep the helper's
+    signature under the ``too-many-arguments`` threshold and to make
+    main() readable.
+    """
+
+    args: argparse.Namespace
+    objectives: list[ProbeObjective]
+    config_paths: list[Path]
+    policy_clses: dict[str, type]
+    seeds: list[int]
+    baseline_dir: Optional[Path]
+    results_dir: Path
+
+
+def _resolve_runner_paths(
+    args: argparse.Namespace, repo_root: Path
+) -> tuple[Path, Optional[Path]]:
+    """Resolve ``results_dir`` + optional ``baseline_dir`` against the repo root.
+
+    Mutates ``args.results_dir`` so downstream session-runner code sees
+    the resolved absolute path.
+    """
+    results_dir = Path(args.results_dir)
+    if not results_dir.is_absolute():
+        results_dir = repo_root / results_dir
+    args.results_dir = str(results_dir)
+    baseline_dir: Optional[Path] = None
+    if args.baseline_results:
+        baseline_dir = Path(args.baseline_results)
+        if not baseline_dir.is_absolute():
+            baseline_dir = repo_root / baseline_dir
+    return results_dir, baseline_dir
+
+
+def _execute_session_grid(
+    inputs: _GridInputs,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run the (objectives × configs × policies × seeds) grid.
+
+    Returns ``(matrix_rows, error_rows)``. Framework errors (from
+    ``_run_one_session`` itself) are caught and recorded as error_rows;
+    per-session terminal reasons (VICTIM_CRASHED, JUDGE_UNAVAILABLE, ...)
+    are recorded as matrix_rows by ``_run_one_session``.
+    """
+    matrix_rows: list[dict[str, Any]] = []
+    error_rows: list[dict[str, Any]] = []
+    is_stub = inputs.args.stub
+    for objective in inputs.objectives:
+        for config_path in inputs.config_paths:
+            mas_id = config_path.stem
+            baseline_text = _load_baseline_text(inputs.baseline_dir, mas_id)
+            for policy_name, policy_cls in inputs.policy_clses.items():
+                for seed in inputs.seeds:
+                    spec = _SessionRunSpec(
+                        identity=_SessionIdentity(
+                            objective=objective,
+                            config_path=config_path,
+                            policy_name=policy_name,
+                            seed=seed,
+                        ),
+                        policy_cls=policy_cls,
+                        is_stub=is_stub,
+                        baseline_text=baseline_text,
+                    )
+                    try:
+                        row, _ = _run_one_session(spec, inputs.args)
+                    # framework-level errors must not abort the whole run; record as error_row
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        LOGGER.exception(
+                            "Framework error on (%s, %s, %s, seed=%s)",
+                            objective.objective_id,
+                            mas_id,
+                            policy_name,
+                            seed,
+                        )
+                        error_rows.append({"error": str(exc)})
+                        continue
+                    matrix_rows.append(row)
+                    append_probe_csv_row(row, inputs.results_dir)
+    return matrix_rows, error_rows
+
+
+def main(argv: Optional[list[str]] = None) -> int:
     """Entry point. See module docstring."""
     args = _build_argparser().parse_args(argv)
     logging.basicConfig(
@@ -594,50 +803,18 @@ def main(  # pylint: disable=too-many-locals
         LOGGER.error("Unknown policy names: %s", sorted(missing))
         return 1
 
-    results_dir = Path(args.results_dir)
-    if not results_dir.is_absolute():
-        results_dir = repo_root / results_dir
-    args.results_dir = str(results_dir)
-
-    baseline_dir: Optional[Path] = None
-    if args.baseline_results:
-        baseline_dir = Path(args.baseline_results)
-        if not baseline_dir.is_absolute():
-            baseline_dir = repo_root / baseline_dir
-
-    matrix_rows: list[dict[str, Any]] = []
-    error_rows: list[dict[str, Any]] = []
-    is_stub = args.stub
-
-    for objective in objectives:
-        for config_path in config_paths:
-            mas_id = config_path.stem
-            baseline_text = _load_baseline_text(baseline_dir, mas_id)
-            for policy_name, policy_cls in policy_clses.items():
-                for seed in seeds:
-                    try:
-                        row, _ = _run_one_session(
-                            objective=objective,
-                            config_path=config_path,
-                            policy_name=policy_name,
-                            policy_cls=policy_cls,
-                            seed=seed,
-                            args=args,
-                            is_stub=is_stub,
-                            baseline_text=baseline_text,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-exception-caught
-                        LOGGER.exception(
-                            "Framework error on (%s, %s, %s, seed=%s)",
-                            objective.objective_id,
-                            mas_id,
-                            policy_name,
-                            seed,
-                        )
-                        error_rows.append({"error": str(exc)})
-                        continue
-                    matrix_rows.append(row)
-                    append_probe_csv_row(row, results_dir)
+    results_dir, baseline_dir = _resolve_runner_paths(args, repo_root)
+    matrix_rows, error_rows = _execute_session_grid(
+        _GridInputs(
+            args=args,
+            objectives=objectives,
+            config_paths=config_paths,
+            policy_clses=policy_clses,
+            seeds=seeds,
+            baseline_dir=baseline_dir,
+            results_dir=results_dir,
+        )
+    )
 
     _print_summary(matrix_rows, error_rows)
     # Framework errors (vs per-session terminal reasons) → non-zero exit

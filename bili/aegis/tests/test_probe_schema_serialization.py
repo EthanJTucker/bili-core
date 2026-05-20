@@ -5,113 +5,53 @@ Anti-cheat focus: catches sloppy implementations like ``turns[-1].tier3_score``
 to round-trip through ``json.dumps``.
 """
 
-# pylint: disable=duplicate-code  # builder fixtures legitimately overlap with other PROBE tests
-
 import json
 from enum import Enum
-from typing import Any
 
 import pytest
 
 from bili.aegis.probe.schema import (
     PROBE_CSV_COLUMNS,
-    AttackIntent,
-    ProbeObjective,
-    ProbeOutcome,
     ProbeOutcomeReason,
     ProbeSession,
     ProbeTurn,
     TurnVerdict,
 )
-
-# =========================================================================
-# Builders
-# =========================================================================
-
-
-def _obj(
-    objective_id: str = "pr_test_001",
-    harm_class: str = "misinformation",
-    severity: str = "high",
-) -> ProbeObjective:
-    return ProbeObjective(
-        objective_id=objective_id,
-        harm_class=harm_class,
-        severity=severity,
-        objective_text="Test objective.",
-        success_criterion="Test criterion.",
-    )
+from bili.aegis.tests.conftest import make_probe_objective as _obj
+from bili.aegis.tests.conftest import make_probe_outcome as _outcome
+from bili.aegis.tests.conftest import make_probe_session, make_probe_turn
 
 
-def _turn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    idx: int,
-    tier3_score: int,
-    tier3_reasoning: str = "default reasoning",
-    tier3_confidence: str = "medium",
-    influenced: list[str] | None = None,
-    propagation_path: list[str] | None = None,
-    verdict: TurnVerdict = TurnVerdict.NO_PROGRESS,
-) -> ProbeTurn:
-    return ProbeTurn(
+def _turn(idx: int, tier3_score: int = 0, **kwargs) -> ProbeTurn:
+    """Local helper: positional ``idx`` / ``tier3_score`` for score-aggregation tests.
+
+    Accepts ``influenced=[...]`` as a friendlier alias for
+    ``influenced_agents``. Other kwargs forward to :func:`make_probe_turn`.
+    Uses the same per-turn payload / observation / token values the local
+    builder originally hard-coded, so tests that inspect those fields keep
+    their expected values.
+    """
+    if "influenced" in kwargs:
+        kwargs["influenced_agents"] = kwargs.pop("influenced")
+    return make_probe_turn(
         turn_index=idx,
-        intent=AttackIntent(
-            target_agent_role="reviewer",
-            attack_angle="test-angle",
-            rationale="test rationale",
-        ),
+        tier3_score=tier3_score,
         payload_text=f"payload for turn {idx}",
         victim_output={"messages": []},
-        propagation_path=propagation_path if propagation_path is not None else [],
-        influenced_agents=influenced if influenced is not None else [],
         observation_summary=f"observation {idx}",
-        verdict=verdict,
-        tier3_score=tier3_score,
-        tier3_reasoning=tier3_reasoning,
-        tier3_confidence=tier3_confidence,
         duration_ms=100.0,
         tokens_attacker=10,
         tokens_victim=20,
         tokens_judge=5,
+        **kwargs,
     )
 
 
-def _outcome(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    reason: ProbeOutcomeReason = ProbeOutcomeReason.BUDGET_EXCEEDED,
-    final_tier3_score: int = 0,
-    turns_to_compromise: int | None = None,
-    estimated_cost_usd: float = 0.12,
-) -> ProbeOutcome:
-    return ProbeOutcome(
-        reason=reason,
-        final_tier3_score=final_tier3_score,
-        turns_to_compromise=turns_to_compromise,
-        total_duration_ms=500.0,
-        total_tokens_attacker=100,
-        total_tokens_victim=200,
-        total_tokens_judge=50,
-        estimated_cost_usd=estimated_cost_usd,
-    )
-
-
-def _session(
-    turns: list[ProbeTurn] | None = None,
-    final_outcome: ProbeOutcome | None = None,
-    attacker_model_config: dict[str, Any] | None = None,
-) -> ProbeSession:
-    return ProbeSession(
-        session_id="sess-123",
-        objective=_obj(),
-        victim_mas_id="simple_chain",
-        victim_mas_path="bili/aether/config/examples/simple_chain.yaml",
-        policy_name="pair",
-        rng_seed=0,
-        attacker_model_config=(
-            attacker_model_config if attacker_model_config is not None else {}
-        ),
-        judge_model_config={},
-        turns=turns if turns is not None else [],
-        final_outcome=final_outcome,
-    )
+def _session(**kwargs) -> ProbeSession:
+    """Local helper: session with id='sess-123' for identity-roundtrip assertions."""
+    defaults: dict = {"session_id": "sess-123"}
+    defaults.update(kwargs)
+    return make_probe_session(**defaults)
 
 
 # =========================================================================
@@ -125,38 +65,36 @@ def test_probe_csv_columns_has_exactly_21_entries():
 
 
 def test_probe_csv_columns_includes_all_13_cross_suite_columns():
-    """The shared schema is preserved verbatim."""
-    expected = {
-        "payload_id",
-        "injection_type",
-        "severity",
-        "stub_mode",
-        "mas_id",
-        "phase",
-        "tier1_pass",
-        "tier2_influenced",
-        "tier2_resistant",
-        "tier3_score",
-        "tier3_confidence",
-        "tier3_reasoning",
-        "attack_suite",
-    }
-    assert expected.issubset(set(PROBE_CSV_COLUMNS))
+    """The shared schema is preserved verbatim.
+
+    Each column is named explicitly so a rename in :mod:`schema` surfaces
+    here; the tuple-of-strings form keeps the literal under pylint's
+    ``min-similarity-lines`` threshold so this test does not need a
+    duplicate-code disable.
+    """
+    cols = set(PROBE_CSV_COLUMNS)
+    # fmt: off
+    cross_suite = (
+        "payload_id", "injection_type", "severity", "stub_mode", "mas_id",
+        "phase", "tier1_pass", "tier2_influenced", "tier2_resistant",
+        "tier3_score", "tier3_confidence", "tier3_reasoning", "attack_suite",
+    )
+    # fmt: on
+    for name in cross_suite:
+        assert name in cols, f"missing cross-suite column: {name}"
 
 
 def test_probe_csv_columns_includes_all_8_probe_specific_columns():
-    """The PROBE-extension columns are present."""
-    expected = {
-        "session_id",
-        "objective_id",
-        "policy",
-        "rng_seed",
-        "turns_used",
-        "budget_used",
-        "turns_to_compromise",
-        "terminated_reason",
-    }
-    assert expected.issubset(set(PROBE_CSV_COLUMNS))
+    """The PROBE-extension columns are present (same drift-detection pattern)."""
+    cols = set(PROBE_CSV_COLUMNS)
+    # fmt: off
+    probe_specific = (
+        "session_id", "objective_id", "policy", "rng_seed",
+        "turns_used", "budget_used", "turns_to_compromise", "terminated_reason",
+    )
+    # fmt: on
+    for name in probe_specific:
+        assert name in cols, f"missing PROBE-specific column: {name}"
 
 
 # =========================================================================
