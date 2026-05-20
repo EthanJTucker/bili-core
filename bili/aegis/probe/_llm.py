@@ -22,10 +22,11 @@ from langchain_core.messages import HumanMessage
 LOGGER = logging.getLogger(__name__)
 
 
+# Single-method Protocol is the entire type contract; adding another
+# method would change the contract. pylint min-public-methods=2 fires
+# on any 1-method Protocol regardless.
 @runtime_checkable
-class ProbeLLM(
-    Protocol
-):  # pylint: disable=too-few-public-methods  # Protocol with a single ``invoke`` method is the explicit design
+class ProbeLLM(Protocol):  # pylint: disable=too-few-public-methods
     """Minimal LLM interface used by every PROBE node and policy.
 
     Implementations return a 3-tuple of ``(response_text, tokens_in,

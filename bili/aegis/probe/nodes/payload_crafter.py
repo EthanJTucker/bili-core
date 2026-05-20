@@ -23,7 +23,7 @@ contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Optional
 
 from bili.aegis.probe._llm import ProbeLLM, resolve_real_llm
@@ -93,16 +93,21 @@ class PayloadCrafterNode:
 
     model_config: dict[str, Any]
     victim_mas_shape: dict[str, Any]
-    llm_override: Optional[ProbeLLM] = None
-    # Resolved by __post_init__; declared with init=False so callers don't
-    # accidentally pass the wrong LLM.
+    # ``InitVar`` accepts the override at construction but does NOT store
+    # it as an instance attribute, matching the original __init__ that
+    # discarded ``llm_override`` after using it. This prevents the
+    # footgun where someone mutates ``node.llm_override`` after init and
+    # expects ``_llm`` to re-resolve.
+    llm_override: InitVar[Optional[ProbeLLM]] = None
+    # Resolved by __post_init__; declared with init=False so callers
+    # cannot accidentally pass a pre-resolved LLM in the wrong slot.
     _llm: ProbeLLM = field(init=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, llm_override: Optional[ProbeLLM]) -> None:
         """Resolve the LLM from ``model_config`` unless ``llm_override`` is set."""
         self._llm = (
-            self.llm_override
-            if self.llm_override is not None
+            llm_override
+            if llm_override is not None
             else resolve_real_llm(self.model_config)
         )
 

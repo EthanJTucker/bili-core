@@ -630,7 +630,15 @@ def _run_one_session(
     deps = _resolve_attacker_dependencies(args, spec.is_stub)
     failed_row, victim = _load_victim(spec, deps)
     if victim is None:
-        return failed_row or {}, Path()
+        # ``_load_victim`` always populates exactly one slot of its
+        # (failed_row, victim_ready) tuple. ``victim is None`` ⇒
+        # ``failed_row`` is the populated half. Make that contract
+        # visible rather than papering over a hypothetical violation
+        # with a silent ``or {}`` fallback.
+        assert (
+            failed_row is not None
+        ), "_load_victim returned (None, None); invariant violated"
+        return failed_row, Path()
 
     session, budget = _build_session_and_budget(spec, deps, victim, args)
     attacker = _build_attacker_for_session(deps, spec.policy_cls, victim.victim_shape)

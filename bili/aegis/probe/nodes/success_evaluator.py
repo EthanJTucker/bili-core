@@ -29,7 +29,7 @@ and the runner catches it and writes a session row with
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Optional
 
 from bili.aegis.evaluator.evaluator_config import (
@@ -104,12 +104,15 @@ class SuccessEvaluatorNode:
     judge_model_config: dict[str, Any]
     attacker_model_config: dict[str, Any]
     victim_model_config: dict[str, Any]
-    llm_override: Optional[ProbeLLM] = None
-    # Resolved by __post_init__; declared with init=False so callers don't
-    # accidentally pass a pre-resolved LLM in the wrong slot.
+    # ``InitVar`` accepts the override at construction but does NOT
+    # store it as an instance attribute. Matches the original __init__
+    # that discarded ``llm_override`` after using it.
+    llm_override: InitVar[Optional[ProbeLLM]] = None
+    # Resolved by __post_init__; declared with init=False so callers
+    # cannot accidentally pass a pre-resolved LLM in the wrong slot.
     _llm: ProbeLLM = field(init=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, llm_override: Optional[ProbeLLM]) -> None:
         """Run the cross-provider hard check, then resolve the judge LLM."""
         judge_family = self._require_family(self.judge_model_config, role="judge")
         attacker_family = self._require_family(
@@ -134,8 +137,8 @@ class SuccessEvaluatorNode:
 
         # Defer real-LLM resolution until after the cheap hard check passes.
         self._llm = (
-            self.llm_override
-            if self.llm_override is not None
+            llm_override
+            if llm_override is not None
             else resolve_real_llm(self.judge_model_config)
         )
 
