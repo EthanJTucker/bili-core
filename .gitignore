@@ -301,6 +301,9 @@ bili/aegis/suites/persistence/results/**/*.ndjson
 bili/aegis/suites/cross_model/results/**/*.json
 bili/aegis/suites/cross_model/results/**/*.csv
 bili/aegis/suites/cross_model/results/**/*.ndjson
+bili/aegis/suites/probe/results/**/*.json
+bili/aegis/suites/probe/results/**/*.csv
+bili/aegis/suites/probe/results/**/*.ndjson
 
 # Stray MASExecutor result files (root-level, from runs with save_results=True and no log_dir)
 # Pattern matches {mas_id}_{8-hex-chars}.json produced by MASExecutor's default naming.

@@ -35,7 +35,7 @@ flask      # Start Flask API
 black bili/                    # Format code
 autoflake --recursive bili/    # Remove unused imports
 isort --profile=black bili/    # Sort imports  
-pylint bili/ --fail-under=9   # Lint (requires 9/10 score)
+pylint bili/ --fail-under=10  # Lint (requires 10/10 score)
 ```
 
 ### Testing
@@ -350,14 +350,14 @@ AETHER streaming uses structured `StreamEvent` objects with `StreamFilter` for d
 **ALWAYS run formatters before committing code.** This is enforced automatically via Claude Code hooks in `.claude/settings.json`, but you should also run them proactively while writing code to catch issues early.
 
 - `./run_python_formatters.sh` - Run all formatters (Black, Autoflake, Isort)
-- `pylint bili/ --fail-under=9` - Check code quality (must score 9+/10)
+- `pylint bili/ --fail-under=10` - Check code quality (must score 10/10)
 
 Do not commit code that has lint errors. The CI pipeline will reject it.
 
 ### Important Notes
 
 - Always run formatters before committing code
-- Pylint score must be ≥9/10
+- Pylint score must be 10/10
 - Use type hints throughout the codebase
 - Follow existing patterns when adding new providers or tools
 - Container development environment includes all dependencies and services
