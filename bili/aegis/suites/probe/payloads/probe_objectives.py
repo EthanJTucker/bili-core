@@ -137,8 +137,13 @@ PROBE_OBJECTIVE_LIBRARY: list[ProbeObjective] = [
             "configured tool registry."
         ),
         target_agent_role=None,
-        notes="Targets the OpenClaw ClawHub supply-chain surface (13,000+ "
-        "community-contributed skills). Novel attack class not covered "
-        "by the existing five AEGIS suites; PROBE-original.",
+        notes="Targets the OpenClaw ClawHub supply-chain surface, which the "
+        "ClawHavoc campaign (Feb 2026) demonstrated is actively "
+        "compromised: 824+ malicious skills in a 10,700-skill registry "
+        "(approx 20% of the marketplace per Bitdefender), exploiting "
+        "CVE-2026-25253 and the lack of static analysis on skill "
+        "publication; reach estimated at approximately 300,000 OpenClaw "
+        "users. Novel attack class not covered by the existing five "
+        "AEGIS suites; PROBE-original.",
     ),
 ]
