@@ -5,35 +5,15 @@
 # BiliCore: An Open-Source LLM Framework
 
 <p align="center">
-  <a href="https://github.com/msu-denver/bili-core/actions"><img src="https://github.com/msu-denver/bili-core/actions/workflows/ci-cd.yml/badge.svg?branch=develop" alt="CI/CD"></a>
+  <a href="https://github.com/msu-denver/bili-core/actions/workflows/ci-cd.yml"><img src="https://github.com/msu-denver/bili-core/actions/workflows/ci-cd.yml/badge.svg?branch=develop" alt="CI/CD"></a>
   <a href="https://github.com/msu-denver/bili-core/releases/latest"><img src="https://img.shields.io/github/v/release/msu-denver/bili-core" alt="Latest Release"></a>
-  <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-6900%2B%20passing-brightgreen.svg" alt="6900+ Tests">
-  <img src="https://img.shields.io/badge/coverage-90%25-brightgreen.svg" alt="Coverage">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/LangChain-framework-orange.svg" alt="LangChain">
-  <img src="https://img.shields.io/badge/LangGraph-orchestration-orange.svg" alt="LangGraph">
-  <img src="https://img.shields.io/badge/Streamlit-UI-red.svg" alt="Streamlit">
-  <img src="https://img.shields.io/badge/Flask-API-lightgrey.svg" alt="Flask">
-  <img src="https://img.shields.io/badge/Docker-containerized-blue.svg" alt="Docker">
-  <img src="https://img.shields.io/badge/PostgreSQL-state-336791.svg" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/MongoDB-state-47A248.svg" alt="MongoDB">
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/AWS_Bedrock-supported-FF9900.svg" alt="AWS Bedrock">
-  <img src="https://img.shields.io/badge/Google_Vertex_AI-supported-4285F4.svg" alt="Google Vertex AI">
-  <img src="https://img.shields.io/badge/Azure_OpenAI-supported-0078D4.svg" alt="Azure OpenAI">
-  <img src="https://img.shields.io/badge/OpenAI-supported-412991.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/Ollama-supported-000000.svg" alt="Ollama">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
 **BiliCore** is an open-source, domain-agnostic framework for building and testing LLM-powered applications. It provides single-agent orchestration, multi-agent system creation, and adversarial security testing in one modular package.
 
-Developed as part of the [**Colorado Sustainability Hub**](https://sustainabilityhub.co/) initiative, funded by the **[National Science Foundation (NSF)](https://www.nsf.gov/)** and the **[NAIRR Pilot](https://nairrpilot.org/)**.
+Originally developed for the [**Colorado Sustainability Hub**](https://sustainabilityhub.co/) at MSU Denver's [**Community-Centered Computing (C3) Lab**](https://c3-lab.org/), bili-core now serves as the framework behind multiple research initiatives at the lab. Funded by the **[National Science Foundation (NSF)](https://www.nsf.gov/)** and the **[NAIRR Pilot](https://nairrpilot.org/)**.
 
 ---
 
@@ -42,14 +22,21 @@ Developed as part of the [**Colorado Sustainability Hub**](https://sustainabilit
 BiliCore is organized into three named components, each solving a distinct problem:
 
 ### IRIS — Interactive Reasoning and Integration Services
-**Single-agent orchestration.** 60+ models across 6 providers.
+**Single-agent orchestration.** 109 model configurations across 18 provider types.
 
 IRIS bridges users to LLMs, tools, and data sources. It provides a node-based workflow pipeline where each step (persona injection, tool execution, memory management, response normalization) is a composable node. Switch models mid-conversation, configure tools on the fly, and persist state across sessions.
 
-- **Providers:** AWS Bedrock, Google Vertex AI, Azure OpenAI, OpenAI, Ollama, local models
+- **API providers:** AWS Bedrock, Google Vertex AI, Azure OpenAI, OpenAI, Anthropic (direct), Mistral AI, Cohere, Google Generative AI, DeepSeek, xAI (Grok), Groq
+- **CLI providers:** Claude Code CLI, OpenAI Codex CLI, Google Gemini CLI (subprocess, `tool_strategy="mcp"`), plus a generic CLI subprocess provider for any text-in/text-out LLM tool
+- **Local providers:** llama.cpp (GGUF models), HuggingFace (GPTQ/transformers), Ollama (local daemon over HTTP, native tool calling for tool-capable models)
+- **Fallback engine:** `FallbackLLM` chains multiple providers so a transient error on the primary silently retries the next in the list
+- **Structured output:** pass `structured_output_schema` (JSON schema dict or Pydantic class) to `load_model()` and generation is constrained to schema-valid JSON at decode time — Ollama (llama.cpp GBNF grammar), OpenAI + Azure OpenAI (`response_format` with `strict: true`), Vertex AI + Google GenAI (controlled generation); `parse_structured_content()` parses and validates the response, and unsupported providers fail fast instead of silently returning an unconstrained model
+- **Tool-calling modes:** `native` (bind_tools; API providers and tool-capable local models via Ollama), `facilitated` (prompted ReAct hand-rolled loop for text-only/in-process local models), `mcp` (agent tools exposed as an ephemeral authenticated MCP server; CLI self-orchestrates), `none` (no tool support, plain path)
+- **Ephemeral MCP server:** `tool_strategy="mcp"` starts a per-call in-process MCP server (FastMCP + uvicorn, SSE transport) on a random loopback port; per-call Bearer-token auth; per-CLI injectors for Claude Code, Codex, and Gemini CLI; falls back to tool-less if no injector registered (never starts unauthenticated)
 - **Tools:** FAISS vector search, OpenSearch, weather APIs, web search, extensible tool registry
 - **Middleware:** Summarization, model call limiting, custom middleware
 - **Checkpointers:** MongoDB, PostgreSQL, in-memory — all with queryable conversation management
+- **MCP subsystem:** `bili/iris/mcp/` covers two directions: (1) MCP client — agents consume tools from external MCP servers (stdio or HTTP/SSE) as LangChain tools; (2) MCP server — expose an agent's tools to a spawned CLI LLM via the ephemeral server. Install: `pip install bili-core[mcp]`
 - **Streaming:** Token-by-token responses via sync and async APIs
 - **Location:** `bili/iris/`
 
@@ -100,11 +87,11 @@ cp .env.example .env
 
 ```bash
 cd scripts/development
-./start-container.sh
-./attach-container.sh
+./start-container
+./attach-container
 ```
 
-This starts the bili-core container along with PostgreSQL (with PostGIS), MongoDB, and LocalStack services. The container automatically activates a Python virtual environment and sets up shell aliases.
+This starts the bili-core container along with PostgreSQL (with PostGIS), MongoDB, and LocalStack services. The container automatically activates a Python virtual environment and sets up shell aliases. The compute profile (`cpu` or `gpu`) is auto-detected from the presence of an NVIDIA GPU; pass `cpu` or `gpu` as an argument to force one.
 
 ### 3. Run the application
 
@@ -113,6 +100,30 @@ Inside the container:
 ```bash
 streamlit    # Start the Streamlit UI on port 8501
 flask        # Start the Flask API on port 5001
+```
+
+#### Detached mode (background bringup)
+
+To bring the same environment up in the background without holding a terminal (useful for automation, CI, or when you just want the services running), pass `-d`:
+
+```bash
+./scripts/development/start-container -d          # auto-detect cpu/gpu profile
+./scripts/development/start-container -d cpu       # force the cpu profile
+```
+
+Detached mode brings up compose, starts Flask (`:5001`) and Streamlit (`:8501`) inside the container, waits for the Flask API to respond, and prints the log-tail and stop commands. The foreground behavior above is unchanged.
+
+Tail the logs:
+
+```bash
+docker exec bili-core tail -f /tmp/flask.log
+docker exec bili-core tail -f /tmp/streamlit.log
+```
+
+Tear the environment down (works for foreground or detached, safe to run when nothing is up):
+
+```bash
+./scripts/development/stop-container
 ```
 
 ### 4. Access the application
@@ -318,6 +329,6 @@ All functionality is preserved — only the locations changed.
 
 ## Acknowledgments
 
-This research is supported by the [National Science Foundation (NSF) (Grant No. 2318730)](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2318730) and the [National Artificial Intelligence Research Resource (NAIRR) Pilot](https://nairrpilot.org/projects/awarded?_requestNumber=NAIRR240197). Their support has been instrumental in advancing AI accessibility and fostering innovation in sustainability-focused applications.
+bili-core is developed at MSU Denver's [Community-Centered Computing (C3) Lab](https://c3-lab.org/), which houses research projects spanning sustainability, education, and community-centered computing. This work is supported by the [National Science Foundation (NSF) (Grant No. 2318730)](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2318730) and the [National Artificial Intelligence Research Resource (NAIRR) Pilot](https://nairrpilot.org/projects/awarded?_requestNumber=NAIRR240197). Their support has been instrumental in advancing AI accessibility and fostering innovation in sustainability-focused applications.
 
-For more information, visit the [Sustainability Hub Website](https://sustainabilityhub.co/).
+For more information, visit the [C3 Lab website](https://c3-lab.org/) or the [Sustainability Hub website](https://sustainabilityhub.co/).
